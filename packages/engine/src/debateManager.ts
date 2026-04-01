@@ -52,6 +52,75 @@ function throwIfAborted(signal?: AbortSignal) {
   }
 }
 
+interface ParsedHunk {
+  hunkHeader: string;
+  lines: string[];
+}
+
+interface ParsedPatchFile {
+  filePath: string;
+  status: string;
+  headerLines: string[];
+  hunks: ParsedHunk[];
+  fullPatch: string;
+  hasBinaryPatch: boolean;
+}
+
+function parsePatchFiles(rawDiff: string): ParsedPatchFile[] {
+  const lines = rawDiff.split("\n");
+  const files: ParsedPatchFile[] = [];
+  let current: ParsedPatchFile | null = null;
+  let currentHunk: ParsedHunk | null = null;
+
+  const flushHunk = () => {
+    if (!current || !currentHunk) return;
+    current.hunks.push(currentHunk);
+    currentHunk = null;
+  };
+  const flushFile = () => {
+    if (!current) return;
+    flushHunk();
+    files.push(current);
+    current = null;
+  };
+
+  for (const line of lines) {
+    const diffMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    if (diffMatch) {
+      flushFile();
+      current = {
+        filePath: diffMatch[2],
+        status: "M",
+        headerLines: [line],
+        hunks: [],
+        fullPatch: "",
+        hasBinaryPatch: false
+      };
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith("new file mode")) current.status = "A";
+    if (line.startsWith("deleted file mode")) current.status = "D";
+    if (line.startsWith("similarity index") || line.startsWith("rename from ") || line.startsWith("rename to ")) current.status = "R";
+    if (line.includes("Binary files ") || line.includes("GIT binary patch")) current.hasBinaryPatch = true;
+    if (line.startsWith("@@")) {
+      flushHunk();
+      currentHunk = { hunkHeader: line, lines: [line] };
+      continue;
+    }
+    if (currentHunk) {
+      currentHunk.lines.push(line);
+    } else {
+      current.headerLines.push(line);
+    }
+  }
+  flushFile();
+  for (const file of files) {
+    file.fullPatch = [...file.headerLines, ...file.hunks.flatMap((h) => h.lines)].join("\n").trim();
+  }
+  return files;
+}
+
 export class DebateManager {
   constructor(private runtime: RuntimeClient) {}
 
@@ -197,18 +266,18 @@ export class DebateManager {
     if (!(await this.isGitRepository(input.projectPath, input.signal))) {
       return this.createPredictedFallback("Exact preview unavailable: project is not a git repository.");
     }
-
-    if (!(await this.isCleanWorkingTree(input.projectPath, input.signal))) {
-      return this.createPredictedFallback(
-        "Exact preview unavailable: working tree has uncommitted changes, which makes sandbox preview misleading."
-      );
-    }
-
-    const sandboxPath = await fs.mkdtemp(path.join(os.tmpdir(), "inno-preview-"));
-    let attached = false;
+    const cleanTree = await this.isCleanWorkingTree(input.projectPath, input.signal);
+    const sandboxPath = await fs.mkdtemp(path.join(os.tmpdir(), cleanTree ? "inno-preview-worktree-" : "inno-preview-copy-"));
+    let sandboxKind: "worktree" | "copy" = cleanTree ? "worktree" : "copy";
+    let attachedWorktree = false;
     try {
-      await this.runGit(input.projectPath, ["worktree", "add", "--detach", sandboxPath, "HEAD"], input.signal);
-      attached = true;
+      if (cleanTree) {
+        await this.runGit(input.projectPath, ["worktree", "add", "--detach", sandboxPath, "HEAD"], input.signal);
+        attachedWorktree = true;
+      } else {
+        await fs.rm(sandboxPath, { recursive: true, force: true });
+        await fs.cp(input.projectPath, sandboxPath, { recursive: true });
+      }
       const implementerModel = input.config.roleModelMap.implementer;
       emitPhase(input.onLog, "revision", "implementer started (exact preview sandbox)", "implementer");
       await this.runtime.runTurn({
@@ -221,8 +290,15 @@ export class DebateManager {
       });
       emitPhase(input.onLog, "revision", "implementer finished (exact preview sandbox)", "implementer");
 
-      const changedFiles = await this.collectChangedFiles(sandboxPath, input.signal);
       const diff = await this.collectDiff(sandboxPath, input.signal);
+      const parsedFiles = parsePatchFiles(diff);
+      const changedFiles = parsedFiles.map((entry) => entry.filePath);
+      const unsupportedFiles = parsedFiles
+        .filter((entry) => entry.status === "R" || entry.hasBinaryPatch)
+        .map((entry) => ({
+          filePath: entry.filePath,
+          reason: entry.status === "R" ? "Rename/copy patches are not supported for selective apply." : "Binary patches are not supported."
+        }));
       const validationResults = await this.runValidationCommands(sandboxPath, input.config, input.onLog, input.signal);
       const validationReport = formatValidationReport(validationResults);
 
@@ -230,13 +306,15 @@ export class DebateManager {
         exactPreviewAvailable: true,
         previewMode: "exact",
         sandboxPath,
+        sandboxKind,
         changedFiles,
         diff,
         validationReport,
-        validationResults
+        validationResults,
+        unsupportedFiles
       };
     } catch (error) {
-      if (attached) {
+      if (attachedWorktree) {
         await this.cleanupWorktree(input.projectPath, sandboxPath);
       } else {
         await fs.rm(sandboxPath, { recursive: true, force: true });
@@ -247,44 +325,110 @@ export class DebateManager {
   }
 
   async cleanupExactPreview(projectPath: string, sandboxPath: string): Promise<void> {
-    await this.cleanupWorktree(projectPath, sandboxPath);
+    await this.cleanupSandbox(projectPath, sandboxPath);
   }
 
   async applyFromExactPreviewArtifact(input: {
     projectPath: string;
     sandboxPath: string;
+    applyMode: "exact_all" | "exact_selected_files" | "exact_selected_hunks";
     selectedFiles?: string[];
+    selectedHunks?: Array<{ filePath: string; hunkIndex: number }>;
     config: DebateConfig;
     onLog?: (event: RuntimeEvent) => void;
     signal?: AbortSignal;
   }): Promise<ApplyRunResult> {
     throwIfAborted(input.signal);
-    const changedFiles = await this.collectChangedFiles(input.sandboxPath, input.signal);
-    const fileSet = new Set(changedFiles);
-    const selected = input.selectedFiles?.length ? input.selectedFiles.filter((file) => fileSet.has(file)) : changedFiles;
-    if (!selected.length) {
+    const diff = await this.collectDiff(input.sandboxPath, input.signal);
+    const patchFiles = parsePatchFiles(diff);
+    const fileSet = new Set(patchFiles.map((entry) => entry.filePath));
+    const blockedReasons: string[] = [];
+
+    const unsupported = patchFiles.filter((entry) => entry.status === "R" || entry.hasBinaryPatch);
+    if (unsupported.length && input.applyMode !== "exact_all") {
+      blockedReasons.push(
+        ...unsupported.map((entry) =>
+          `${entry.filePath}: ${entry.status === "R" ? "rename/copy patch unsupported for selective apply" : "binary patch unsupported"}`
+        )
+      );
+    }
+
+    if (blockedReasons.length) {
       return {
         messages: [],
-        validationReport: "Apply blocked: no selectable files found in exact preview artifact.",
+        validationReport: "Apply blocked due to unsupported selective patch cases.",
         validationResults: [],
         diff: "No diff generated.",
         applied: false,
-        applyMode: input.selectedFiles?.length ? "exact_selected" : "exact_all",
-        changedFiles: []
+        applyMode: input.applyMode,
+        changedFiles: [],
+        blockedReasons
       };
     }
-
-    const statusMap = await this.collectNameStatus(input.sandboxPath, input.signal);
-    for (const filePath of selected) {
-      throwIfAborted(input.signal);
-      const sourcePath = path.join(input.sandboxPath, filePath);
-      const targetPath = path.join(input.projectPath, filePath);
-      if (statusMap.get(filePath) === "D") {
-        await fs.rm(targetPath, { force: true });
-        continue;
+    let selectedFiles: string[] = [];
+    if (input.applyMode === "exact_all") {
+      selectedFiles = patchFiles.map((entry) => entry.filePath);
+      await this.applyPatchText(input.projectPath, patchFiles.map((entry) => entry.fullPatch).join("\n"), input.signal);
+    } else if (input.applyMode === "exact_selected_files") {
+      selectedFiles = (input.selectedFiles || []).filter((file) => fileSet.has(file));
+      if (!selectedFiles.length) {
+        return {
+          messages: [],
+          validationReport: "Apply blocked: no selectable files were chosen.",
+          validationResults: [],
+          diff: "No diff generated.",
+          applied: false,
+          applyMode: input.applyMode,
+          changedFiles: [],
+          blockedReasons: ["No files selected."]
+        };
       }
-      await fs.mkdir(path.dirname(targetPath), { recursive: true });
-      await fs.copyFile(sourcePath, targetPath);
+      const filePatches = patchFiles.filter((entry) => selectedFiles.includes(entry.filePath)).map((entry) => entry.fullPatch).join("\n");
+      await this.applyPatchText(input.projectPath, filePatches, input.signal);
+    } else {
+      const selectedHunks = input.selectedHunks || [];
+      if (!selectedHunks.length) {
+        return {
+          messages: [],
+          validationReport: "Apply blocked: no hunks were selected.",
+          validationResults: [],
+          diff: "No diff generated.",
+          applied: false,
+          applyMode: input.applyMode,
+          changedFiles: [],
+          blockedReasons: ["No hunks selected."]
+        };
+      }
+      const selectedByFile = new Map<string, Set<number>>();
+      for (const entry of selectedHunks) {
+        if (!fileSet.has(entry.filePath)) continue;
+        selectedByFile.set(entry.filePath, selectedByFile.get(entry.filePath) || new Set<number>());
+        selectedByFile.get(entry.filePath)!.add(entry.hunkIndex);
+      }
+      const patchText = patchFiles
+        .map((file) => {
+          const indexes = selectedByFile.get(file.filePath);
+          if (!indexes?.size) return "";
+          const hunks = file.hunks.filter((_h, idx) => indexes.has(idx)).flatMap((h) => h.lines);
+          if (!hunks.length) return "";
+          selectedFiles.push(file.filePath);
+          return [...file.headerLines, ...hunks].join("\n");
+        })
+        .filter(Boolean)
+        .join("\n");
+      if (!patchText.trim()) {
+        return {
+          messages: [],
+          validationReport: "Apply blocked: selected hunks could not be resolved.",
+          validationResults: [],
+          diff: "No diff generated.",
+          applied: false,
+          applyMode: input.applyMode,
+          changedFiles: [],
+          blockedReasons: ["Selected hunk references were invalid."]
+        };
+      }
+      await this.applyPatchText(input.projectPath, patchText, input.signal);
     }
 
     emitPhase(input.onLog, "validation", "validation started");
@@ -296,8 +440,8 @@ export class DebateManager {
       validationResults,
       diff: await this.collectDiff(input.projectPath, input.signal),
       applied: true,
-      applyMode: input.selectedFiles?.length ? "exact_selected" : "exact_all",
-      changedFiles: selected
+      applyMode: input.applyMode,
+      changedFiles: Array.from(new Set(selectedFiles))
     };
   }
 
@@ -397,23 +541,6 @@ export class DebateManager {
       .filter(Boolean);
   }
 
-  private async collectNameStatus(projectPath: string, signal?: AbortSignal): Promise<Map<string, string>> {
-    throwIfAborted(signal);
-    const { stdout } = await execFileAsync("git", ["-C", projectPath, "diff", "--name-status", "--", "."], {
-      maxBuffer: 10 * 1024 * 1024,
-      signal
-    });
-    const map = new Map<string, string>();
-    for (const line of stdout.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const [status, filePath] = trimmed.split(/\s+/, 2);
-      if (!status || !filePath) continue;
-      map.set(filePath, status);
-    }
-    return map;
-  }
-
   private async isGitRepository(projectPath: string, signal?: AbortSignal): Promise<boolean> {
     try {
       await execFileAsync("git", ["-C", projectPath, "rev-parse", "--is-inside-work-tree"], {
@@ -447,6 +574,46 @@ export class DebateManager {
     }).catch(async () => {
       await fs.rm(sandboxPath, { recursive: true, force: true });
     });
+  }
+
+  private async cleanupSandbox(projectPath: string, sandboxPath: string): Promise<void> {
+    await this.cleanupWorktree(projectPath, sandboxPath);
+    await fs.rm(sandboxPath, { recursive: true, force: true });
+  }
+
+  async cleanupStalePreviewSandboxes(maxAgeMs = 24 * 60 * 60 * 1000): Promise<number> {
+    const tempDir = os.tmpdir();
+    const entries = await fs.readdir(tempDir, { withFileTypes: true });
+    const now = Date.now();
+    let removed = 0;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (!entry.name.startsWith("inno-preview-worktree-") && !entry.name.startsWith("inno-preview-copy-")) continue;
+      const target = path.join(tempDir, entry.name);
+      try {
+        const stat = await fs.stat(target);
+        if (now - stat.mtimeMs < maxAgeMs) continue;
+        await fs.rm(target, { recursive: true, force: true });
+        removed += 1;
+      } catch {
+        // ignore cleanup race conditions
+      }
+    }
+    return removed;
+  }
+
+  private async applyPatchText(projectPath: string, patchText: string, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
+    const patchPath = path.join(os.tmpdir(), `inno-apply-${Date.now()}-${Math.random().toString(36).slice(2)}.patch`);
+    await fs.writeFile(patchPath, `${patchText.trim()}\n`, "utf8");
+    try {
+      await execFileAsync("git", ["-C", projectPath, "apply", "--3way", "--whitespace=nowarn", patchPath], {
+        maxBuffer: 10 * 1024 * 1024,
+        signal
+      });
+    } finally {
+      await fs.rm(patchPath, { force: true });
+    }
   }
 
   private createPredictedFallback(reason: string): ExactPreviewResult {

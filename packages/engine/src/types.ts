@@ -75,10 +75,12 @@ export interface ExactPreviewResult {
   previewMode: "exact" | "predicted";
   reason?: string;
   sandboxPath?: string;
+  sandboxKind?: "worktree" | "copy";
   changedFiles: string[];
   diff: string;
   validationReport: string;
   validationResults: ValidationResult[];
+  unsupportedFiles?: Array<{ filePath: string; reason: string }>;
 }
 
 export interface ValidationResult {
@@ -93,6 +95,7 @@ export interface ApplyRunResult {
   validationResults: ValidationResult[];
   diff: string;
   applied: boolean;
-  applyMode: "runtime_full" | "exact_all" | "exact_selected";
+  applyMode: "runtime_full" | "exact_all" | "exact_selected_files" | "exact_selected_hunks";
   changedFiles: string[];
+  blockedReasons?: string[];
 }

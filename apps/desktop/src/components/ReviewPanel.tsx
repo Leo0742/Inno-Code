@@ -16,17 +16,22 @@ interface Props {
   exactPreviewFiles: string[];
   exactPreviewValidationReport: string;
   selectedFiles: string[];
+  selectedHunks: Array<{ filePath: string; hunkIndex: number }>;
+  unsupportedFiles: Array<{ filePath: string; reason: string }>;
   onSelectedFilesChange: (files: string[]) => void;
+  onSelectedHunksChange: (hunks: Array<{ filePath: string; hunkIndex: number }>) => void;
   onGenerateExactPreview: () => void;
   onApply: () => void;
   onApplyAllExact: () => void;
   onApplySelectedExact: () => void;
+  onApplySelectedHunksExact: () => void;
   onDiscard: () => void;
 }
 
 interface ParsedDiffFile {
   filePath: string;
   patch: string;
+  hunks: string[];
 }
 
 function parseDiffByFile(rawDiff: string): ParsedDiffFile[] {
@@ -38,7 +43,8 @@ function parseDiffByFile(rawDiff: string): ParsedDiffFile[] {
 
   const flush = () => {
     if (!buffer.length) return;
-    files.push({ filePath: currentFile, patch: buffer.join("\n").trim() });
+    const patch = buffer.join("\n").trim();
+    files.push({ filePath: currentFile, patch, hunks: patch.split("\n").filter((line) => line.startsWith("@@")) });
     buffer = [];
   };
 
@@ -70,11 +76,15 @@ export function ReviewPanel({
   exactPreviewFiles,
   exactPreviewValidationReport,
   selectedFiles,
+  selectedHunks,
+  unsupportedFiles,
   onSelectedFilesChange,
+  onSelectedHunksChange,
   onGenerateExactPreview,
   onApply,
   onApplyAllExact,
   onApplySelectedExact,
+  onApplySelectedHunksExact,
   onDiscard
 }: Props) {
   const parsedDiff = useMemo(() => parseDiffByFile(diff), [diff]);
@@ -92,6 +102,14 @@ export function ReviewPanel({
     }
     onSelectedFilesChange([...selectedFiles, filePath]);
   };
+  const toggleHunk = (filePath: string, hunkIndex: number) => {
+    const exists = selectedHunks.some((entry) => entry.filePath === filePath && entry.hunkIndex === hunkIndex);
+    if (exists) {
+      onSelectedHunksChange(selectedHunks.filter((entry) => !(entry.filePath === filePath && entry.hunkIndex === hunkIndex)));
+      return;
+    }
+    onSelectedHunksChange([...selectedHunks, { filePath, hunkIndex }]);
+  };
 
   return (
     <section className="panel">
@@ -105,6 +123,7 @@ export function ReviewPanel({
         <button disabled={!canApply} onClick={onApply}>Apply Approved Plan (Legacy Full)</button>
         <button disabled={!canApply || previewMode !== "exact"} onClick={onApplyAllExact}>Apply All</button>
         <button disabled={!canApply || previewMode !== "exact" || selectedFiles.length === 0} onClick={onApplySelectedExact}>Apply Selected Files</button>
+        <button disabled={!canApply || previewMode !== "exact" || selectedHunks.length === 0} onClick={onApplySelectedHunksExact}>Apply Selected Hunks</button>
         <button disabled={!canApply} className="button-danger" onClick={onDiscard}>Discard Pending Plan</button>
       </div>
       {previewMode !== "exact" ? (
@@ -167,6 +186,33 @@ export function ReviewPanel({
                 </label>
               </li>
             ))}
+          </ul>
+          {unsupportedFiles.length ? (
+            <>
+              <h5>Unsupported Selective Patch Cases</h5>
+              <ul>
+                {unsupportedFiles.map((entry) => (
+                  <li key={`${entry.filePath}-${entry.reason}`}>
+                    <strong>{entry.filePath}</strong>: {entry.reason}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          <h5>Hunk Selection</h5>
+          <ul>
+            {exactPreviewByFile.flatMap((entry) =>
+              entry.hunks.map((hunkHeader, hunkIndex) => {
+                const checked = selectedHunks.some((h) => h.filePath === entry.filePath && h.hunkIndex === hunkIndex);
+                return (
+                  <li key={`${entry.filePath}-${hunkHeader}-${hunkIndex}`}>
+                    <label>
+                      <input type="checkbox" checked={checked} onChange={() => toggleHunk(entry.filePath, hunkIndex)} /> {entry.filePath} — hunk {hunkIndex + 1}: {hunkHeader}
+                    </label>
+                  </li>
+                );
+              })
+            )}
           </ul>
           <h5>Exact Sandbox Diff by File</h5>
           <div className="review-grid">

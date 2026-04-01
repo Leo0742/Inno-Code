@@ -83,6 +83,8 @@ export function App() {
   const [exactPreviewFiles, setExactPreviewFiles] = useState<string[]>([]);
   const [exactPreviewValidationReport, setExactPreviewValidationReport] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
+  const [selectedHunks, setSelectedHunks] = useState<Array<{ filePath: string; hunkIndex: number }>>([]);
+  const [exactUnsupportedFiles, setExactUnsupportedFiles] = useState<Array<{ filePath: string; reason: string }>>([]);
 
   async function refreshPendingSessions() {
     const sessions = await window.innoCode.getPendingPlans();
@@ -133,6 +135,8 @@ export function App() {
       setExactPreviewFiles(exactPreview.changedFiles ?? []);
       setExactPreviewValidationReport(exactPreview.validationReport ?? "");
       setSelectedFiles(exactPreview.changedFiles ?? []);
+      setSelectedHunks([]);
+      setExactUnsupportedFiles(exactPreview.unsupportedFiles ?? []);
     } else {
       setPreviewMode("predicted");
       setExactPreviewReason(exactPreview?.reason ?? "");
@@ -140,6 +144,8 @@ export function App() {
       setExactPreviewFiles([]);
       setExactPreviewValidationReport("");
       setSelectedFiles([]);
+      setSelectedHunks([]);
+      setExactUnsupportedFiles([]);
     }
     setLogs((prev) => [...prev, `Loaded pending review session ${selected.sessionId}.`]);
   }
@@ -167,6 +173,8 @@ export function App() {
     setExactPreviewFiles([]);
     setExactPreviewValidationReport("");
     setSelectedFiles([]);
+    setSelectedHunks([]);
+    setExactUnsupportedFiles([]);
     setLogs([]);
     try {
       const result = await window.innoCode.runPlan({ task, projectPath, streamId });
@@ -198,7 +206,7 @@ export function App() {
     await runApply("runtime_full");
   }
 
-  async function runApply(applyMode: "runtime_full" | "exact_all" | "exact_selected") {
+  async function runApply(applyMode: "runtime_full" | "exact_all" | "exact_selected_files" | "exact_selected_hunks") {
     if (!sessionId || isRunning) return;
     const streamId = createClientStreamId("apply");
     setActiveStreamId(streamId);
@@ -210,7 +218,8 @@ export function App() {
         approved: true,
         streamId,
         applyMode,
-        selectedFiles: applyMode === "exact_selected" ? selectedFiles : undefined
+        selectedFiles: applyMode === "exact_selected_files" ? selectedFiles : undefined,
+        selectedHunks: applyMode === "exact_selected_hunks" ? selectedHunks : undefined
       });
       setMessages((prev) => [...prev, ...result.messages]);
       setValidationReport(result.validationReport);
@@ -248,6 +257,8 @@ export function App() {
         setExactPreviewFiles(result.changedFiles);
         setExactPreviewValidationReport(result.validationReport);
         setSelectedFiles(result.changedFiles);
+        setSelectedHunks([]);
+        setExactUnsupportedFiles(result.unsupportedFiles ?? []);
         setStatus("exact_preview_ready");
       } else {
         setPreviewMode("predicted");
@@ -256,6 +267,8 @@ export function App() {
         setExactPreviewFiles([]);
         setExactPreviewValidationReport("");
         setSelectedFiles([]);
+        setSelectedHunks([]);
+        setExactUnsupportedFiles([]);
         setStatus("exact_preview_unavailable");
       }
       await refreshPendingSessions();
@@ -294,6 +307,8 @@ export function App() {
     setExactPreviewFiles([]);
     setExactPreviewValidationReport("");
     setSelectedFiles([]);
+    setSelectedHunks([]);
+    setExactUnsupportedFiles([]);
     await refreshPendingSessions();
   }
 
@@ -356,11 +371,15 @@ export function App() {
           exactPreviewFiles={exactPreviewFiles}
           exactPreviewValidationReport={exactPreviewValidationReport}
           selectedFiles={selectedFiles}
+          selectedHunks={selectedHunks}
+          unsupportedFiles={exactUnsupportedFiles}
           onSelectedFilesChange={setSelectedFiles}
+          onSelectedHunksChange={setSelectedHunks}
           onGenerateExactPreview={handleGenerateExactPreview}
           onApply={handleApply}
           onApplyAllExact={() => runApply("exact_all")}
-          onApplySelectedExact={() => runApply("exact_selected")}
+          onApplySelectedExact={() => runApply("exact_selected_files")}
+          onApplySelectedHunksExact={() => runApply("exact_selected_hunks")}
           onDiscard={handleDiscard}
         />
       </main>

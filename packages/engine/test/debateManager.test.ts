@@ -131,13 +131,14 @@ describe("DebateManager", () => {
     expect(preview.exactPreviewAvailable).toBe(true);
     expect(preview.previewMode).toBe("exact");
     expect(preview.changedFiles).toEqual(["a.txt", "b.txt"]);
+    expect(preview.sandboxKind).toBe("worktree");
 
     const { stdout } = await execFileAsync("git", ["status", "--porcelain"], { cwd: tempDir });
     expect(stdout.trim()).toBe("");
     await manager.cleanupExactPreview(tempDir, preview.sandboxPath!);
   }, 20000);
 
-  it("falls back when working tree is dirty", async () => {
+  it("generates exact preview for dirty repos using copy sandbox", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "inno-test-dirty-"));
     await execFileAsync("git", ["init"], { cwd: tempDir });
     await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
@@ -154,9 +155,11 @@ describe("DebateManager", () => {
       projectPath: tempDir,
       config
     });
-    expect(preview.exactPreviewAvailable).toBe(false);
-    expect(preview.previewMode).toBe("predicted");
-    expect(preview.reason).toContain("working tree has uncommitted changes");
+    expect(preview.exactPreviewAvailable).toBe(true);
+    expect(preview.previewMode).toBe("exact");
+    expect(preview.sandboxKind).toBe("copy");
+    expect(await fs.readFile(path.join(tempDir, "a.txt"), "utf8")).toBe("dirty\n");
+    await manager.cleanupExactPreview(tempDir, preview.sandboxPath!);
   });
 
   it("applies only selected files from exact preview artifact", async () => {
@@ -179,15 +182,41 @@ describe("DebateManager", () => {
     const applyResult = await manager.applyFromExactPreviewArtifact({
       projectPath: tempDir,
       sandboxPath: preview.sandboxPath!,
+      applyMode: "exact_selected_files",
       selectedFiles: ["a.txt"],
       config: { ...config, validationCommands: ["echo ok"] }
     });
 
     expect(applyResult.applied).toBe(true);
-    expect(applyResult.applyMode).toBe("exact_selected");
+    expect(applyResult.applyMode).toBe("exact_selected_files");
     expect(applyResult.changedFiles).toEqual(["a.txt"]);
     expect(await fs.readFile(path.join(tempDir, "a.txt"), "utf8")).toContain("updated-a");
     expect(await fs.readFile(path.join(tempDir, "b.txt"), "utf8")).toContain("original-b");
     await manager.cleanupExactPreview(tempDir, preview.sandboxPath!);
+  }, 20000);
+
+  it("applies selected hunks from exact preview artifact", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "inno-test-hunks-"));
+    await execFileAsync("git", ["init"], { cwd: tempDir });
+    await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
+    await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: tempDir });
+    await fs.writeFile(path.join(tempDir, "a.txt"), "line1\nline2\nline3\nline4\n", "utf8");
+    await execFileAsync("git", ["add", "."], { cwd: tempDir });
+    await execFileAsync("git", ["commit", "-m", "init"], { cwd: tempDir });
+    const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), "inno-manual-sandbox-"));
+    await fs.cp(tempDir, sandbox, { recursive: true });
+    await fs.writeFile(path.join(sandbox, "a.txt"), "line1\none\nline3\nfour\n", "utf8");
+
+    const manager = new DebateManager(new FakeRuntime());
+    const applyResult = await manager.applyFromExactPreviewArtifact({
+      projectPath: tempDir,
+      sandboxPath: sandbox,
+      applyMode: "exact_selected_hunks",
+      selectedHunks: [{ filePath: "a.txt", hunkIndex: 0 }],
+      config: { ...config, validationCommands: ["echo ok"] }
+    });
+
+    expect(applyResult.applied).toBe(true);
+    expect(applyResult.changedFiles).toEqual(["a.txt"]);
   }, 20000);
 });
