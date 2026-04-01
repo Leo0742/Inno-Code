@@ -19,9 +19,20 @@ export interface DebateConfig {
 }
 
 export interface RuntimeEvent {
-  type: "agent_started" | "agent_finished" | "tool_event" | "command_event" | "validation_event" | "diff_event" | "error_event" | "raw";
+  type:
+    | "phase_event"
+    | "agent_started"
+    | "agent_finished"
+    | "tool_event"
+    | "command_event"
+    | "validation_event"
+    | "diff_event"
+    | "error_event"
+    | "raw";
   message: string;
   raw: string;
+  phase?: DebatePhase;
+  role?: AgentRole;
 }
 
 export interface RuntimeTurnResult {
@@ -52,6 +63,8 @@ export interface PlanRunResult {
   messages: DebateMessage[];
   finalPlan: string;
   proposedDiff: string;
+  predictedChangedFiles: string[];
+  implementationChecklist: string[];
   approvalRequired: boolean;
 }
 

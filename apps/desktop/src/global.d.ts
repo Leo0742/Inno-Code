@@ -1,3 +1,15 @@
+interface RuntimeEventPayload {
+  streamId: string;
+  ts: number;
+  event: {
+    type: string;
+    message: string;
+    raw: string;
+    phase?: string;
+    role?: string;
+  };
+}
+
 interface Window {
   innoCode: {
     version: string;
@@ -23,15 +35,19 @@ interface Window {
       roleModelMap: Record<string, string>;
     }>;
     runPlan: (payload: { task: string; projectPath: string }) => Promise<{
+      streamId: string;
       sessionId: string;
       messages: Array<{ role: string; phase: string; round: number; model: string; content: string }>;
       finalPlan: string;
       proposedDiff: string;
+      predictedChangedFiles: string[];
+      implementationChecklist: string[];
       approvalRequired: boolean;
       logs: string[];
       status: string;
     }>;
     applyPlan: (payload: { sessionId: string; approved: boolean }) => Promise<{
+      streamId: string;
       messages: Array<{ role: string; phase: string; round: number; model: string; content: string }>;
       validationReport: string;
       validationResults: Array<{ command: string; exitCode: number; output: string }>;
@@ -40,6 +56,7 @@ interface Window {
       logs: string[];
       status: string;
     }>;
-    discardPlan: (payload: { sessionId: string }) => Promise<{ ok: boolean }>;
+    discardPlan: (payload: { sessionId: string }) => Promise<{ ok: true }>;
+    onRuntimeEvent: (handler: (payload: RuntimeEventPayload) => void) => () => void;
   };
 }

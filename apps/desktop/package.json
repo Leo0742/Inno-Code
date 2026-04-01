@@ -12,7 +12,8 @@
     "package:mac": "electron-builder --mac",
     "package:win": "electron-builder --win",
     "renderer:dev": "vite",
-    "engine:watch": "npm run -w @inno/engine build:watch"
+    "engine:watch": "npm run -w @inno/engine build:watch",
+    "test": "node --test electron/state.test.js"
   },
   "dependencies": {
     "@inno/engine": "0.1.0",
