@@ -3,14 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "dist-electron/main.js",
+  "main": "electron/main.js",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "dev": "concurrently -k \"npm:renderer:dev\" \"npm:electron:dev\" \"npm:engine:watch\"",
+    "build": "tsc -p tsconfig.json --noEmit && vite build && npm run -w @inno/engine build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "electron:dev": "electron ./electron/main.js",
+    "electron:dev": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron ./electron/main.js",
     "package:mac": "electron-builder --mac",
-    "package:win": "electron-builder --win"
+    "package:win": "electron-builder --win",
+    "renderer:dev": "vite",
+    "engine:watch": "npm run -w @inno/engine build:watch"
   },
   "dependencies": {
     "@inno/engine": "0.1.0",
@@ -24,7 +26,10 @@
     "electron": "^36.0.0",
     "typescript": "^5.8.3",
     "vite": "^6.3.1",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^24.13.3",
+    "concurrently": "^9.0.1",
+    "wait-on": "^8.0.1",
+    "cross-env": "^7.0.3"
   },
   "build": {
     "appId": "com.innocode.desktop",

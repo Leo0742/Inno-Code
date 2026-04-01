@@ -1,37 +1,61 @@
 import { describe, expect, it } from "vitest";
-import { DebateManager, type RuntimeClient } from "../src/index.js";
+import { DebateManager, type RuntimeClient, type RuntimeEvent } from "../src/index.js";
 
 class FakeRuntime implements RuntimeClient {
-  calls: string[] = [];
-  async runTurn(input: { prompt: string }) {
-    this.calls.push(input.prompt);
-    return { output: input.prompt.includes("Validate") ? "All good" : "ok", rawEvents: [] };
+  calls: Array<{ prompt: string; permissionMode?: string }> = [];
+
+  async runTurn(input: { prompt: string; permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan" }) {
+    this.calls.push({ prompt: input.prompt, permissionMode: input.permissionMode });
+    return {
+      output: input.prompt.includes("Generate a proposed unified diff") ? "diff --git a/a b/a" : "ok",
+      rawEvents: [],
+      events: [{ type: "agent_finished", message: "done", raw: "{}" } as RuntimeEvent],
+      exitCode: 0
+    };
   }
 }
 
 describe("DebateManager", () => {
-  it("runs debate, judge and validation", async () => {
+  it("keeps planning in plan permission mode", async () => {
     const rt = new FakeRuntime();
     const manager = new DebateManager(rt);
-    const result = await manager.run({
+
+    const result = await manager.runPlanning({
       task: "Add feature",
       projectPath: process.cwd(),
       config: {
-        rounds: 3,
+        rounds: 2,
         repairAttempts: 1,
-        validationCommands: ["npm test"],
-        roleModelMap: {
-          architect: "a",
-          critic: "b",
-          implementer: "c",
-          judge: "d",
-          verifier: "e"
-        }
+        approvalRequiredForApply: true,
+        validationCommands: ["echo ok"],
+        roleModelMap: { architect: "a", critic: "b", implementer: "c", judge: "d", verifier: "e" }
       }
     });
 
-    expect(result.messages.some((m) => m.role === "judge")).toBe(true);
-    expect(result.validationReport.length).toBeGreaterThan(0);
-    expect(rt.calls.length).toBeGreaterThan(0);
+    expect(result.approvalRequired).toBe(true);
+    expect(result.proposedDiff).toContain("diff --git");
+    expect(rt.calls.every((call) => call.permissionMode === "plan")).toBe(true);
+  });
+
+  it("blocks apply when approval is required but not granted", async () => {
+    const rt = new FakeRuntime();
+    const manager = new DebateManager(rt);
+
+    const result = await manager.applyApprovedPlan({
+      task: "Do task",
+      finalPlan: "plan",
+      approved: false,
+      projectPath: process.cwd(),
+      config: {
+        rounds: 1,
+        repairAttempts: 0,
+        approvalRequiredForApply: true,
+        validationCommands: ["echo ok"],
+        roleModelMap: { architect: "a", critic: "b", implementer: "c", judge: "d", verifier: "e" }
+      }
+    });
+
+    expect(result.applied).toBe(false);
+    expect(rt.calls.length).toBe(0);
   });
 });

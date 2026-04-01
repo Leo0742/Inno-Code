@@ -1,9 +1,11 @@
 export type AgentRole = "architect" | "critic" | "implementer" | "judge" | "verifier";
 
+export type DebatePhase = "proposal" | "critique" | "revision" | "verdict" | "validation" | "repair";
+
 export interface DebateMessage {
   role: AgentRole;
   round: number;
-  phase: "proposal" | "critique" | "revision" | "verdict" | "validation" | "repair";
+  phase: DebatePhase;
   model: string;
   content: string;
 }
@@ -13,11 +15,20 @@ export interface DebateConfig {
   roleModelMap: Record<AgentRole, string>;
   validationCommands: string[];
   repairAttempts: number;
+  approvalRequiredForApply: boolean;
+}
+
+export interface RuntimeEvent {
+  type: "agent_started" | "agent_finished" | "tool_event" | "command_event" | "validation_event" | "diff_event" | "error_event" | "raw";
+  message: string;
+  raw: string;
 }
 
 export interface RuntimeTurnResult {
   output: string;
   rawEvents: string[];
+  events: RuntimeEvent[];
+  exitCode: number;
 }
 
 export interface RuntimeClient {
@@ -26,7 +37,7 @@ export interface RuntimeClient {
     model: string;
     prompt: string;
     permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
-    onEvent?: (event: string) => void;
+    onEvent?: (event: RuntimeEvent) => void;
   }): Promise<RuntimeTurnResult>;
 }
 
@@ -34,12 +45,26 @@ export interface DebateRunInput {
   task: string;
   projectPath: string;
   config: DebateConfig;
-  onLog?: (line: string) => void;
+  onLog?: (event: RuntimeEvent) => void;
 }
 
-export interface DebateRunResult {
+export interface PlanRunResult {
   messages: DebateMessage[];
   finalPlan: string;
+  proposedDiff: string;
+  approvalRequired: boolean;
+}
+
+export interface ValidationResult {
+  command: string;
+  exitCode: number;
+  output: string;
+}
+
+export interface ApplyRunResult {
+  messages: DebateMessage[];
   validationReport: string;
+  validationResults: ValidationResult[];
   diff: string;
+  applied: boolean;
 }

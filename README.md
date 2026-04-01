@@ -1,29 +1,44 @@
 # Inno Code
 
-Desktop-first multi-agent coding debate app (macOS + Windows) integrated with the real `openclaude` runtime.
+Inno Code is a desktop coding assistant (Electron + React) that runs multi-agent debate/planning through `@gitlawb/openclaude`, then gates repository mutation behind explicit user approval.
 
-## What Phase 2 adds
+## Current status (Phase hardening)
 
-- Real runtime-backed debate turns using `@gitlawb/openclaude` CLI.
-- Real file edits and command execution through openclaude tool paths.
-- Real validation + repair loop.
-- Real repository diff output in review panel.
+### What works now
+- Engine-owned orchestration path for debate planning and apply/validation.
+- Desktop app with staged flow: **plan → review → apply/discard → validation**.
+- Structured runtime event normalization (typed event categories).
+- Persisted settings (rounds, repair attempts, validation commands, approval requirement, role model map).
+- Local validation execution with real command exit codes.
 
-## Project structure
+### What is still incomplete
+- Proposed diff is model-generated text and not yet guaranteed to be exact patch output.
+- Cancel-in-flight execution is not implemented yet.
+- Partial/hunk apply is not implemented (full apply/discard only).
+- Runtime semantics depend on openclaude stream format quality.
 
-- `packages/engine`: debate orchestration policy around runtime turns
-- `apps/desktop`: Electron + React desktop app and runtime IPC bridge
-- `docs/`: plan + architecture + phase 2 audit
+## Architecture split
+- `packages/engine`: single source of truth for debate orchestration, apply policy, validation loop, runtime event normalization.
+- `apps/desktop/electron`: IPC bridge, settings persistence, project picker, app lifecycle, session state.
+- `apps/desktop/src`: renderer UX for planning/review/apply flow.
 
-## Development
-
+## Setup
 ```bash
 npm install
-npm run dev
 ```
 
-## Test and build
+> Provider credentials are managed by openclaude runtime configuration (not stored by Inno Code).
 
+## Development
+```bash
+npm run dev
+```
+This runs:
+- Vite renderer dev server
+- Electron main process
+- Engine TypeScript watch build
+
+## Quality checks
 ```bash
 npm test
 npm run typecheck
@@ -31,17 +46,15 @@ npm run build
 ```
 
 ## Packaging
-
 ```bash
 npm run -w @inno/desktop package:mac
 npm run -w @inno/desktop package:win
 ```
 
-## Real integrated flow (local)
-
-1. Launch app.
-2. Click **Open Project Folder** and choose a git repo.
-3. Enter task and run debate.
-4. Review verdict, validation logs, and generated diff.
-
-> Requires provider credentials configured for openclaude-compatible runtime usage.
+## App workflow
+1. Open a project folder (git repo).
+2. Configure settings.
+3. Run planning debate.
+4. Review final plan + proposed diff.
+5. Explicitly **Apply Approved Plan** or **Discard Pending Plan**.
+6. Review validation report and applied repository diff.

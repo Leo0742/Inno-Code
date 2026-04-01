@@ -1,6 +1,15 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { DebateMessage, DebateRunInput, DebateRunResult, RuntimeClient, RuntimeTurnResult } from "./types.js";
+import type {
+  ApplyRunResult,
+  DebateConfig,
+  DebateMessage,
+  DebateRunInput,
+  PlanRunResult,
+  RuntimeClient,
+  RuntimeEvent,
+  ValidationResult
+} from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -8,14 +17,16 @@ function buildContext(messages: DebateMessage[]): string {
   return messages.map((m) => `[${m.role}/${m.phase}] ${m.content}`).join("\n\n");
 }
 
-function looksLikeValidationFailure(report: string): boolean {
-  return /(failed|error|not found|exception)/i.test(report);
+function formatValidationReport(results: ValidationResult[]): string {
+  return results
+    .map((r) => `Command: ${r.command}\nExit Code: ${r.exitCode}\nOutput:\n${r.output || "(no output)"}`)
+    .join("\n\n---\n\n");
 }
 
 export class DebateManager {
   constructor(private runtime: RuntimeClient) {}
 
-  async run(input: DebateRunInput): Promise<DebateRunResult> {
+  async runPlanning(input: DebateRunInput): Promise<PlanRunResult> {
     const messages: DebateMessage[] = [];
 
     for (let round = 1; round <= input.config.rounds; round += 1) {
@@ -23,12 +34,11 @@ export class DebateManager {
       for (const role of ["architect", "critic", "implementer"] as const) {
         const model = input.config.roleModelMap[role];
         const prompt = this.buildRolePrompt(role, phase, input.task, buildContext(messages));
-        input.onLog?.(`Running ${role} (${phase}) with model ${model}`);
         const out = await this.runtime.runTurn({
           projectPath: input.projectPath,
           model,
           prompt,
-          permissionMode: role === "implementer" ? "acceptEdits" : "default",
+          permissionMode: "plan",
           onEvent: input.onLog
         });
         messages.push({ role, phase, round, model, content: out.output });
@@ -39,139 +49,120 @@ export class DebateManager {
     const judgeOut = await this.runtime.runTurn({
       projectPath: input.projectPath,
       model: judgeModel,
-      prompt: `Task: ${input.task}\n\nDebate:\n${buildContext(messages)}\n\nPick the strongest solution, explain why, and produce an execution checklist.`,
-      permissionMode: "default",
+      prompt: `Task: ${input.task}\n\nDebate:\n${buildContext(messages)}\n\nReturn:\n1) Final implementation plan\n2) Risks\n3) Explicit apply checklist`,
+      permissionMode: "plan",
       onEvent: input.onLog
     });
     messages.push({ role: "judge", round: input.config.rounds + 1, phase: "verdict", model: judgeModel, content: judgeOut.output });
 
-    const validationReport = await this.runValidation(input, messages, judgeOut.output);
-    const diff = await this.collectDiff(input.projectPath);
+    const proposedDiffOut = await this.runtime.runTurn({
+      projectPath: input.projectPath,
+      model: input.config.roleModelMap.implementer,
+      permissionMode: "plan",
+      onEvent: input.onLog,
+      prompt: `Generate a proposed unified diff for this task without applying changes.\nTask: ${input.task}\n\nFinal plan:\n${judgeOut.output}`
+    });
 
     return {
       messages,
       finalPlan: judgeOut.output,
-      validationReport,
-      diff
+      proposedDiff: proposedDiffOut.output || "No proposed diff generated.",
+      approvalRequired: input.config.approvalRequiredForApply
     };
   }
 
-  private async runValidation(input: DebateRunInput, messages: DebateMessage[], finalPlan: string): Promise<string> {
-    const verifierModel = input.config.roleModelMap.verifier;
-    let report = "";
+  async applyApprovedPlan(input: DebateRunInput & { finalPlan: string; approved: boolean }): Promise<ApplyRunResult> {
+    const messages: DebateMessage[] = [];
 
-    for (let attempt = 0; attempt <= input.config.repairAttempts; attempt += 1) {
-      const validationPrompt = `Validate the applied changes for task: ${input.task}\nRun these commands and summarize output:\n${input.config.validationCommands.map((c) => `- ${c}`).join("\n")}\n\nFinal plan:\n${finalPlan}`;
-      const validationOut = await this.runtime.runTurn({
-        projectPath: input.projectPath,
-        model: verifierModel,
-        prompt: validationPrompt,
-        permissionMode: "acceptEdits",
-        onEvent: input.onLog
-      });
-      report = validationOut.output;
-      messages.push({ role: "verifier", round: 100 + attempt, phase: "validation", model: verifierModel, content: report });
+    if (input.config.approvalRequiredForApply && !input.approved) {
+      return {
+        messages,
+        validationReport: "Apply blocked: explicit approval is required.",
+        validationResults: [],
+        diff: "No diff generated.",
+        applied: false
+      };
+    }
 
-      if (!looksLikeValidationFailure(report) || attempt === input.config.repairAttempts) {
-        break;
-      }
+    const implementerModel = input.config.roleModelMap.implementer;
+    const applyResult = await this.runtime.runTurn({
+      projectPath: input.projectPath,
+      model: implementerModel,
+      permissionMode: "acceptEdits",
+      onEvent: input.onLog,
+      prompt: `Apply this approved plan exactly, then stop.\n\nTask:\n${input.task}\n\nApproved plan:\n${input.finalPlan}`
+    });
+    messages.push({ role: "implementer", round: 1, phase: "revision", model: implementerModel, content: applyResult.output });
 
-      input.onLog?.(`Validation failed, running repair attempt ${attempt + 1}`);
-      const implementerModel = input.config.roleModelMap.implementer;
+    const validationResults = await this.runValidationCommands(input.projectPath, input.config, input.onLog);
+
+    for (let attempt = 0; attempt < input.config.repairAttempts; attempt += 1) {
+      if (validationResults.every((result) => result.exitCode === 0)) break;
+
+      const verifierSummary = formatValidationReport(validationResults);
+      input.onLog?.({ type: "validation_event", message: `Validation failed, repair attempt ${attempt + 1}`, raw: verifierSummary });
+
       const repair = await this.runtime.runTurn({
         projectPath: input.projectPath,
         model: implementerModel,
         permissionMode: "acceptEdits",
-        prompt: `Validation failed. Fix only reported issues and re-run minimal checks.\nReport:\n${report}\n\nTask:\n${input.task}`,
+        prompt: `Fix only failing validations from this report and avoid unrelated edits.\n\n${verifierSummary}`,
         onEvent: input.onLog
       });
-      messages.push({ role: "implementer", round: 200 + attempt, phase: "repair", model: implementerModel, content: repair.output });
+      messages.push({ role: "implementer", round: 2 + attempt, phase: "repair", model: implementerModel, content: repair.output });
+
+      const rerun = await this.runValidationCommands(input.projectPath, input.config, input.onLog);
+      validationResults.splice(0, validationResults.length, ...rerun);
     }
 
-    return report;
+    const validationReport = formatValidationReport(validationResults);
+    const diff = await this.collectDiff(input.projectPath);
+
+    return {
+      messages,
+      validationReport,
+      validationResults,
+      diff,
+      applied: true
+    };
+  }
+
+  private async runValidationCommands(projectPath: string, config: DebateConfig, onLog?: (event: RuntimeEvent) => void): Promise<ValidationResult[]> {
+    const results: ValidationResult[] = [];
+    for (const command of config.validationCommands) {
+      const commandResult = await execFileAsync("bash", ["-lc", command], {
+        cwd: projectPath,
+        maxBuffer: 10 * 1024 * 1024
+      }).then(
+        ({ stdout, stderr }) => ({ exitCode: 0, output: `${stdout}${stderr}`.trim() }),
+        (error: { code?: number; stdout?: string; stderr?: string }) => ({
+          exitCode: typeof error.code === "number" ? error.code : 1,
+          output: `${error.stdout || ""}${error.stderr || ""}`.trim()
+        })
+      );
+
+      const result: ValidationResult = {
+        command,
+        exitCode: commandResult.exitCode,
+        output: commandResult.output
+      };
+      results.push(result);
+      onLog?.({
+        type: "validation_event",
+        message: `${command} exited with ${result.exitCode}`,
+        raw: JSON.stringify(result)
+      });
+    }
+
+    return results;
   }
 
   private buildRolePrompt(role: "architect" | "critic" | "implementer", phase: string, task: string, context: string): string {
-    return `You are ${role} in a multi-agent coding debate.\nPhase: ${phase}.\nTask: ${task}.\n\nContext from prior messages:\n${context || "(none)"}\n\nRules:\n- Use concrete file paths and commands where relevant.\n- If role is implementer during revision, apply code changes directly in repository.`;
+    return `You are ${role} in a multi-agent coding debate.\nPhase: ${phase}.\nTask: ${task}.\n\nContext from prior messages:\n${context || "(none)"}\n\nRules:\n- Do not edit files directly in planning mode.\n- Use concrete file paths and command-level reasoning.`;
   }
 
   private async collectDiff(projectPath: string): Promise<string> {
     const { stdout } = await execFileAsync("git", ["-C", projectPath, "diff", "--", "."], { maxBuffer: 10 * 1024 * 1024 });
     return stdout || "No diff generated.";
-  }
-}
-
-export class OpenClaudeCliRuntime implements RuntimeClient {
-  async runTurn(input: {
-    projectPath: string;
-    model: string;
-    prompt: string;
-    permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
-    onEvent?: (event: string) => void;
-  }): Promise<RuntimeTurnResult> {
-    const args = [
-      "-y",
-      "@gitlawb/openclaude",
-      "-p",
-      input.prompt,
-      "--print",
-      "--output-format",
-      "stream-json",
-      "--permission-mode",
-      input.permissionMode ?? "default",
-      "--model",
-      input.model,
-      "--add-dir",
-      input.projectPath
-    ];
-
-    return new Promise((resolve, reject) => {
-      const child = spawn("npx", args, { cwd: input.projectPath, env: process.env });
-      let buffer = "";
-      const rawEvents: string[] = [];
-      const outputs: string[] = [];
-
-      child.stdout.on("data", (chunk: Buffer) => {
-        buffer += chunk.toString();
-        let idx;
-        while ((idx = buffer.indexOf("\n")) >= 0) {
-          const line = buffer.slice(0, idx).trim();
-          buffer = buffer.slice(idx + 1);
-          if (!line) continue;
-          rawEvents.push(line);
-          input.onEvent?.(line);
-          try {
-            const evt = JSON.parse(line);
-            const text = this.extractText(evt);
-            if (text) outputs.push(text);
-          } catch {
-            outputs.push(line);
-          }
-        }
-      });
-
-      child.stderr.on("data", (chunk: Buffer) => input.onEvent?.(chunk.toString()));
-      child.on("error", reject);
-      child.on("close", (code: number) => {
-        if (code !== 0) {
-          reject(new Error(`openclaude exited with code ${code}`));
-          return;
-        }
-        resolve({ output: outputs.join("\n").trim(), rawEvents });
-      });
-    });
-  }
-
-  private extractText(value: unknown): string {
-    if (typeof value === "string") return value;
-    if (Array.isArray(value)) return value.map((v) => this.extractText(v)).filter(Boolean).join(" ");
-    if (!value || typeof value !== "object") return "";
-    const obj = value as Record<string, unknown>;
-    const priority = ["text", "content", "message", "result", "output", "summary"];
-    for (const key of priority) {
-      const t = this.extractText(obj[key]);
-      if (t) return t;
-    }
-    return "";
   }
 }
