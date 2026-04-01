@@ -16,6 +16,7 @@ const execFileAsync = promisify(execFile);
 let pendingPlans;
 const activeRuns = new Map();
 let lastRuntimeFailure = null;
+let startupIssues = [];
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -69,6 +70,9 @@ function createLiveCollector(event, streamId) {
 }
 
 function registerActiveRun(streamId, kind) {
+  if (activeRuns.has(streamId)) {
+    throw new Error(`Stream id collision for ${streamId}. Retry operation.`);
+  }
   const abortController = new AbortController();
   activeRuns.set(streamId, { kind, abortController, createdAt: Date.now() });
   return abortController;
@@ -76,6 +80,38 @@ function registerActiveRun(streamId, kind) {
 
 function clearActiveRun(streamId) {
   activeRuns.delete(streamId);
+}
+
+function captureRuntimeFailure(kind, error) {
+  lastRuntimeFailure = {
+    at: new Date().toISOString(),
+    kind,
+    message: String(error)
+  };
+}
+
+async function safeCleanupExactPreview(projectPath, sandboxPath) {
+  if (!projectPath || !sandboxPath) return;
+  try {
+    await manager.cleanupExactPreview(projectPath, sandboxPath);
+  } catch (error) {
+    captureRuntimeFailure("cleanup_failure", error);
+  }
+}
+
+function blockedApplyResult(streamId, applyMode, reason, blockedReasons = []) {
+  return {
+    streamId,
+    validationReport: reason,
+    validationResults: [],
+    diff: "No diff generated.",
+    changedFiles: [],
+    applyMode,
+    messages: [],
+    applied: false,
+    blockedReasons,
+    status: "blocked"
+  };
 }
 
 async function getRuntimeDiagnostics() {
@@ -95,10 +131,12 @@ async function getRuntimeDiagnostics() {
     openClaudeCliAvailable,
     openClaudeVersion: version,
     providerConfigurationOwner: "openclaude_runtime",
+    startupIssues,
     guidance: [
       "Inno Code does not manage provider API keys/accounts.",
       "Configure provider credentials and auth in openclaude runtime.",
-      "If runtime calls fail, verify openclaude CLI setup in your shell."
+      "If runtime calls fail, verify openclaude CLI setup in your shell.",
+      "If CLI is unavailable, run: npx -y @gitlawb/openclaude --version in the same shell used to launch Inno Code."
     ],
     lastRuntimeFailure
   };
@@ -106,8 +144,17 @@ async function getRuntimeDiagnostics() {
 
 app.whenReady().then(async () => {
   pendingPlans = createPendingPlanStore({ filePath: getPendingPlansPath() });
-  await pendingPlans.restore();
-  await manager.cleanupStalePreviewSandboxes().catch(() => {});
+  try {
+    await pendingPlans.restore();
+  } catch (error) {
+    startupIssues.push(`Pending review restore failed: ${String(error)}`);
+  }
+  try {
+    const removed = await manager.cleanupStalePreviewSandboxes();
+    if (removed > 0) startupIssues.push(`Removed ${removed} stale exact preview sandbox(es) during startup.`);
+  } catch (error) {
+    startupIssues.push(`Stale sandbox cleanup failed: ${String(error)}`);
+  }
   await pendingPlans.reconcileExactPreviews(async (session) => {
     if (!session?.exactPreview?.sandboxPath) return session;
     try {
@@ -127,6 +174,10 @@ app.whenReady().then(async () => {
       };
     }
   });
+  const runtimeDiagnostics = await getRuntimeDiagnostics();
+  if (!runtimeDiagnostics.openClaudeCliAvailable) {
+    startupIssues.push("openclaude CLI check failed. Planning/apply actions will fail until runtime is available.");
+  }
 
   ipcMain.handle("project:pick", async () => {
     const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
@@ -180,7 +231,7 @@ app.whenReady().then(async () => {
         });
         throw new Error("Run cancelled");
       }
-      lastRuntimeFailure = { at: new Date().toISOString(), message: String(error) };
+      captureRuntimeFailure("planning_failure", error);
       throw error;
     } finally {
       clearActiveRun(streamId);
@@ -198,8 +249,17 @@ app.whenReady().then(async () => {
         diff: "No diff generated.",
         messages: [],
         applied: false,
+        blockedReasons: ["Session is missing, stale, discarded, or already applied."],
         status: "error"
       };
+    }
+    if (payload.applyMode !== "runtime_full" && !session.exactPreview?.exactPreviewAvailable) {
+      return blockedApplyResult(
+        streamId,
+        payload.applyMode,
+        "Selective apply is blocked because exact sandbox preview is unavailable.",
+        ["Generate an exact preview first, then retry selective apply."]
+      );
     }
 
     const { onLog } = createLiveCollector(event, streamId);
@@ -210,17 +270,12 @@ app.whenReady().then(async () => {
       if (payload.applyMode === "exact_selected_files" || payload.applyMode === "exact_selected_hunks" || payload.applyMode === "exact_all") {
         const exactPreview = session.exactPreview;
         if (!exactPreview?.exactPreviewAvailable || !exactPreview.sandboxPath) {
-          return {
+          return blockedApplyResult(
             streamId,
-            validationReport: "Selective apply is blocked because exact sandbox preview is unavailable.",
-            validationResults: [],
-            diff: "No diff generated.",
-            changedFiles: [],
-            applyMode: payload.applyMode,
-            messages: [],
-            applied: false,
-            status: "blocked"
-          };
+            payload.applyMode,
+            "Selective apply is blocked because exact sandbox preview is unavailable.",
+            ["Regenerate exact preview because preview artifacts are stale or missing."]
+          );
         }
         result = await manager.applyFromExactPreviewArtifact({
           projectPath: session.projectPath,
@@ -246,7 +301,7 @@ app.whenReady().then(async () => {
 
       if (result.applied || payload.approved === false) {
         if (session.exactPreview?.sandboxPath) {
-          await manager.cleanupExactPreview(session.projectPath, session.exactPreview.sandboxPath);
+          await safeCleanupExactPreview(session.projectPath, session.exactPreview.sandboxPath);
         }
         await pendingPlans.delete(payload.sessionId);
       }
@@ -261,7 +316,7 @@ app.whenReady().then(async () => {
         });
         throw new Error("Run cancelled");
       }
-      lastRuntimeFailure = { at: new Date().toISOString(), message: String(error) };
+      captureRuntimeFailure("apply_failure", error);
       throw error;
     } finally {
       clearActiveRun(streamId);
@@ -279,7 +334,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("debate:discard", async (_evt, payload) => {
     const session = pendingPlans.get(payload.sessionId);
     if (session?.exactPreview?.sandboxPath) {
-      await manager.cleanupExactPreview(session.projectPath, session.exactPreview.sandboxPath);
+      await safeCleanupExactPreview(session.projectPath, session.exactPreview.sandboxPath);
     }
     await pendingPlans.delete(payload.sessionId);
     return { ok: true };
@@ -301,7 +356,7 @@ app.whenReady().then(async () => {
       };
     }
     if (session.exactPreview?.sandboxPath) {
-      await manager.cleanupExactPreview(session.projectPath, session.exactPreview.sandboxPath);
+      await safeCleanupExactPreview(session.projectPath, session.exactPreview.sandboxPath);
     }
 
     const { onLog } = createLiveCollector(event, streamId);
@@ -333,9 +388,20 @@ app.whenReady().then(async () => {
       return { ...preview, streamId };
     } catch (error) {
       if (isAbortError(error)) {
+        await pendingPlans.set(payload.sessionId, {
+          ...session,
+          exactPreview: {
+            exactPreviewAvailable: false,
+            previewMode: "predicted",
+            reason: "Exact preview generation was cancelled. Existing preview artifacts were cleared for safety.",
+            changedFiles: [],
+            diff: "No exact preview diff generated.",
+            validationReport: "No validation output for exact preview."
+          }
+        });
         throw new Error("Run cancelled");
       }
-      lastRuntimeFailure = { at: new Date().toISOString(), message: String(error) };
+      captureRuntimeFailure("exact_preview_failure", error);
       throw error;
     } finally {
       clearActiveRun(streamId);

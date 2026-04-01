@@ -16,6 +16,8 @@
 - Settings persistence to local `userData/settings.json`.
 - Pending review session state (session id -> approved apply context).
 - Startup/session preview reconciliation for missing stale sandboxes.
+- Defensive startup diagnostics for restore/cleanup/runtime dependency failures.
+- Explicit failure-kind capture (`planning_failure`, `apply_failure`, `exact_preview_failure`, `cleanup_failure`).
 - Project picker + app lifecycle + window boot.
 
 ### `apps/desktop/src` (renderer UX)
@@ -59,3 +61,4 @@ Electron stores log lines as `[type] message` for renderer display.
 - Proposed diff is advisory model output before apply.
 - Line-level apply/edit is intentionally deferred.
 - Selective apply blocks unsupported rename/copy and binary patch cases.
+- openclaude provider/key ownership remains external to Inno Code (app only surfaces diagnostics/guidance).

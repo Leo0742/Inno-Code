@@ -35,6 +35,28 @@ export function isRuntimeEventForActiveStream(activeStreamId, incomingStreamId) 
 export function createPendingPlanStore({ filePath, fsModule = fs } = {}) {
   const pendingPlans = new Map();
 
+  function normalizeSession(entry) {
+    if (!entry || typeof entry !== "object" || typeof entry.sessionId !== "string") return null;
+    const { sessionId, ...session } = entry;
+    if (!session || typeof session !== "object") return null;
+    if (typeof session.task !== "string" || typeof session.projectPath !== "string" || typeof session.finalPlan !== "string") {
+      return null;
+    }
+    if (!session.settings || typeof session.settings !== "object") {
+      return null;
+    }
+    return {
+      sessionId,
+      session: {
+        ...session,
+        settings: mergeSettings(session.settings),
+        proposedDiff: typeof session.proposedDiff === "string" ? session.proposedDiff : "No proposed diff generated.",
+        predictedChangedFiles: Array.isArray(session.predictedChangedFiles) ? session.predictedChangedFiles : [],
+        implementationChecklist: Array.isArray(session.implementationChecklist) ? session.implementationChecklist : []
+      }
+    };
+  }
+
   async function persist() {
     if (!filePath) return;
     const serialized = Array.from(pendingPlans.entries()).map(([sessionId, value]) => ({
@@ -50,13 +72,18 @@ export function createPendingPlanStore({ filePath, fsModule = fs } = {}) {
     try {
       const raw = await fsModule.readFile(filePath, "utf8");
       const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
+      if (!Array.isArray(parsed)) {
+        pendingPlans.clear();
+        await persist();
+        return [];
+      }
       pendingPlans.clear();
       for (const entry of parsed) {
-        if (!entry || typeof entry.sessionId !== "string") continue;
-        const { sessionId, ...session } = entry;
-        pendingPlans.set(sessionId, session);
+        const normalized = normalizeSession(entry);
+        if (!normalized) continue;
+        pendingPlans.set(normalized.sessionId, normalized.session);
       }
+      await persist();
       return list();
     } catch {
       return [];

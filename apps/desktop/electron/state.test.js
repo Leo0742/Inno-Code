@@ -100,3 +100,22 @@ test("pending plan store can reconcile stale exact preview metadata", async () =
 
   assert.equal(store.get("session-1")?.exactPreview?.exactPreviewAvailable, false);
 });
+
+test("pending plan store drops malformed persisted entries during restore", async () => {
+  const memoryFs = createMemoryFs();
+  const filePath = "/tmp/pending.json";
+  memoryFs.files.set(
+    filePath,
+    JSON.stringify([
+      { sessionId: "ok", task: "t", projectPath: "/repo", finalPlan: "p", settings: { rounds: 2 }, proposedDiff: "x" },
+      { sessionId: "bad-1", task: "t" },
+      { nope: true }
+    ])
+  );
+  const store = createPendingPlanStore({ filePath, fsModule: memoryFs });
+
+  const restored = await store.restore();
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0].sessionId, "ok");
+  assert.equal(store.size(), 1);
+});

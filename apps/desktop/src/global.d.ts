@@ -69,8 +69,9 @@ interface Window {
       openClaudeCliAvailable: boolean;
       openClaudeVersion: string;
       providerConfigurationOwner: "openclaude_runtime";
+      startupIssues?: string[];
       guidance: string[];
-      lastRuntimeFailure: null | { at: string; message: string };
+      lastRuntimeFailure: null | { at: string; kind?: string; message: string };
     }>;
     runPlan: (payload: { task: string; projectPath: string; streamId: string }) => Promise<{
       streamId: string;
