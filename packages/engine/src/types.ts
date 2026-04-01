@@ -10,9 +10,14 @@ export interface DebateMessage {
   content: string;
 }
 
+export interface RuntimeProviderConfig {
+  envOverrides?: Record<string, string>;
+}
+
 export interface DebateConfig {
   rounds: number;
   roleModelMap: Record<AgentRole, string>;
+  roleProviderMap?: Partial<Record<AgentRole, RuntimeProviderConfig>>;
   validationCommands: string[];
   repairAttempts: number;
   approvalRequiredForApply: boolean;
@@ -50,6 +55,7 @@ export interface RuntimeClient {
     permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
     onEvent?: (event: RuntimeEvent) => void;
     signal?: AbortSignal;
+    envOverrides?: Record<string, string>;
   }): Promise<RuntimeTurnResult>;
 }
 

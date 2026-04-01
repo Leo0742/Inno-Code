@@ -10,7 +10,7 @@ Inno Code is a desktop coding assistant (Electron + React) that runs multi-agent
 - **Pending Sessions UI** to browse all saved sessions, load one into review, and delete stale sessions.
 - **Cancel-in-flight** support for planning and apply/validation runs with explicit cancelled status/logging.
 - **Live runtime event streaming** from Electron main to renderer for planning/apply progress, isolated by active `streamId`.
-- Persisted settings (rounds, repair attempts, validation commands, approval requirement, role model map).
+- Persisted settings (rounds, repair attempts, validation commands, approval requirement, provider profiles, role model selections).
 - Editable role-to-model mappings for architect, critic, implementer, judge, verifier.
 - Local command-based validation execution with real command exit codes.
 - Verifier model used as a **post-validation summarizer** (not as command executor).
@@ -44,13 +44,15 @@ Inno Code is a desktop coding assistant (Electron + React) that runs multi-agent
 - Applied git diff can be reviewed by changed file as post-apply source of truth.
 
 ### Runtime/provider settings clarity
-- In-app settings manage planner/apply flow settings only.
-- Provider selection, API keys, and account/runtime auth are explicitly documented as managed by openclaude runtime outside Inno Code.
-- Added lightweight runtime diagnostics in settings:
+- In-app settings now manage provider profiles, provider type, endpoint/base URL, and role-to-provider/model mapping.
+- API credentials are handled in Electron main process via encrypted local file storage (`credentials.key.json` + `credentials.secrets.json` in app userData).
+- Runtime calls now inject provider credentials/endpoints into openclaude invocation env for OpenAI-compatible providers.
+- Anthropic-compatible profiles are stored and visible but currently marked unsupported for runtime wiring in this phase.
+- Added runtime diagnostics in settings:
   - openclaude CLI availability/version probe,
-  - startup issue recovery notes (stale sandbox cleanup/reconcile),
-  - last runtime invocation failure summary with failure kind,
-  - troubleshooting guidance and responsibility split.
+  - provider profile status (enabled, credential presence),
+  - provider validation categories (missing credential / unsupported wiring),
+  - startup issue recovery notes and last runtime failure summary.
 
 ### Reliability hardening in this phase
 - Pending session restore now sanitizes malformed persisted entries instead of reviving partial/broken sessions.
@@ -65,7 +67,6 @@ Inno Code is a desktop coding assistant (Electron + React) that runs multi-agent
 ## Intentionally deferred in this phase
 - Line-level editing/apply inside review.
 - Exact pre-apply patch generation parity with post-apply output.
-- Full provider/key management replacement inside Inno Code.
 - IDE-grade diff/editor UX.
 - Full installer/first-run wizard experience.
 - Broad enterprise/perf/security platform work.
@@ -80,7 +81,8 @@ Inno Code is a desktop coding assistant (Electron + React) that runs multi-agent
 npm install
 ```
 
-> Provider credentials are managed by openclaude runtime configuration (not stored by Inno Code).
+> Provider credentials are configured in-app and encrypted at rest in local app storage.
+> Runtime execution is still delegated to openclaude CLI.
 
 ## Development
 ```bash
@@ -106,7 +108,7 @@ npm run -w @inno/desktop package:win
 
 ## App workflow
 1. Open a project folder (git repo).
-2. Configure settings (role-model mapping + validation commands + debate/apply controls).
+2. Configure provider profiles + credentials + role-to-provider/model mapping and validation commands.
 3. Run planning debate and watch live events.
 4. Use **Pending Sessions** to choose the exact session to review/apply.
 5. Review final plan + pre-apply predicted artifacts.

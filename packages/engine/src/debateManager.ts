@@ -52,6 +52,11 @@ function throwIfAborted(signal?: AbortSignal) {
   }
 }
 
+
+function getRoleProviderConfig(config: DebateConfig, role: AgentRole) {
+  return config.roleProviderMap?.[role];
+}
+
 interface ParsedHunk {
   hunkHeader: string;
   lines: string[];
@@ -143,7 +148,8 @@ export class DebateManager {
           prompt,
           permissionMode: "plan",
           onEvent: input.onLog,
-          signal: input.signal
+          signal: input.signal,
+          envOverrides: getRoleProviderConfig(input.config, role)?.envOverrides
         });
         messages.push({ role, phase, round, model, content: out.output });
         emitPhase(input.onLog, phase, `${role} finished (${phase})`, role);
@@ -159,7 +165,8 @@ export class DebateManager {
       prompt: `Task: ${input.task}\n\nDebate:\n${buildContext(messages)}\n\nReturn:\n1) Final implementation plan\n2) Risks\n3) Explicit apply checklist`,
       permissionMode: "plan",
       onEvent: input.onLog,
-      signal: input.signal
+      signal: input.signal,
+      envOverrides: getRoleProviderConfig(input.config, "judge")?.envOverrides
     });
     messages.push({ role: "judge", round: input.config.rounds + 1, phase: "verdict", model: judgeModel, content: judgeOut.output });
     emitPhase(input.onLog, "verdict", "judge finished (verdict)", "judge");
@@ -233,7 +240,8 @@ export class DebateManager {
         permissionMode: "acceptEdits",
         prompt: `Fix only failing validations from this report and avoid unrelated edits.\n\n${verifierSummary}`,
         onEvent: input.onLog,
-        signal: input.signal
+        signal: input.signal,
+        envOverrides: getRoleProviderConfig(input.config, "implementer")?.envOverrides
       });
       messages.push({ role: "implementer", round: 2 + attempt, phase: "repair", model: implementerModel, content: repair.output });
       emitPhase(input.onLog, "repair", `implementer finished (repair ${attempt + 1})`, "implementer");

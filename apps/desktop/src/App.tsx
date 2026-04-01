@@ -14,13 +14,7 @@ export interface DebateMessage {
   content: string;
 }
 
-interface AppSettings {
-  rounds: number;
-  repairAttempts: number;
-  approvalRequiredForApply: boolean;
-  validationCommands: string[];
-  roleModelMap: Record<string, string>;
-}
+type AppSettings = AppSettingsShape;
 
 const defaultSettings: AppSettings = {
   rounds: 3,
@@ -33,6 +27,14 @@ const defaultSettings: AppSettings = {
     implementer: "gpt-4.1",
     judge: "gpt-4.1",
     verifier: "gpt-4.1-mini"
+  },
+  providerProfiles: [],
+  roleModelSelections: {
+    architect: { profileId: "default-openai", model: "gpt-4.1" },
+    critic: { profileId: "default-openai", model: "gpt-4.1-mini" },
+    implementer: { profileId: "default-openai", model: "gpt-4.1" },
+    judge: { profileId: "default-openai", model: "gpt-4.1" },
+    verifier: { profileId: "default-openai", model: "gpt-4.1-mini" }
   }
 };
 
@@ -91,14 +93,7 @@ export function App() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [activeStreamId, setActiveStreamId] = useState("");
   const [pendingSessions, setPendingSessions] = useState<PendingPlanSession[]>([]);
-  const [runtimeDiagnostics, setRuntimeDiagnostics] = useState<{
-    openClaudeCliAvailable: boolean;
-    openClaudeVersion: string;
-    providerConfigurationOwner: string;
-    startupIssues?: string[];
-    guidance: string[];
-    lastRuntimeFailure: null | { at: string; kind?: string; message: string };
-  } | null>(null);
+  const [runtimeDiagnostics, setRuntimeDiagnostics] = useState<any>(null);
   const [previewMode, setPreviewMode] = useState<"predicted" | "exact">("predicted");
   const [exactPreviewReason, setExactPreviewReason] = useState("");
   const [exactPreviewDiff, setExactPreviewDiff] = useState("");
@@ -114,7 +109,7 @@ export function App() {
   }
 
   useEffect(() => {
-    window.innoCode.getSettings().then((saved) => setSettings(saved));
+    window.innoCode.getSettings().then((saved) => setSettings({ ...defaultSettings, ...saved }));
     refreshPendingSessions();
     window.innoCode.getRuntimeDiagnostics().then((diagnostics) => setRuntimeDiagnostics(diagnostics));
 
@@ -207,6 +202,9 @@ export function App() {
       setImplementationChecklist(result.implementationChecklist);
       setSessionId(result.sessionId);
       setStatus(result.status);
+      if (result.blockedReasons?.length) {
+        setLogs((prev) => [...prev, ...result.blockedReasons.map((item: string) => `Provider blocked: ${item}`)]);
+      }
       await refreshPendingSessions();
     } catch (error) {
       const message = String(error);
