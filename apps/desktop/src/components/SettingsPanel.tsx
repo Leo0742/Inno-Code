@@ -14,8 +14,9 @@ interface Props {
     openClaudeCliAvailable: boolean;
     openClaudeVersion: string;
     providerConfigurationOwner: string;
+    startupIssues?: string[];
     guidance: string[];
-    lastRuntimeFailure: null | { at: string; message: string };
+    lastRuntimeFailure: null | { at: string; kind?: string; message: string };
   } | null;
   onRefreshDiagnostics: () => void;
 }
@@ -74,10 +75,20 @@ export function SettingsPanel({ settings, onChange, onSave, runtimeDiagnostics, 
           <p className="helper">openclaude CLI available: <strong>{runtimeDiagnostics.openClaudeCliAvailable ? "yes" : "no"}</strong></p>
           <p className="helper">openclaude version/details: {runtimeDiagnostics.openClaudeVersion || "(unknown)"}</p>
           {runtimeDiagnostics.lastRuntimeFailure ? (
-            <pre>Last runtime failure ({runtimeDiagnostics.lastRuntimeFailure.at}): {runtimeDiagnostics.lastRuntimeFailure.message}</pre>
+            <pre>Last runtime failure ({runtimeDiagnostics.lastRuntimeFailure.at}) [{runtimeDiagnostics.lastRuntimeFailure.kind ?? "runtime_failure"}]: {runtimeDiagnostics.lastRuntimeFailure.message}</pre>
           ) : (
             <p className="helper">No runtime failures captured in this app session.</p>
           )}
+          {runtimeDiagnostics.startupIssues?.length ? (
+            <>
+              <h5>Startup Issues (Recovered)</h5>
+              <ul>
+                {runtimeDiagnostics.startupIssues.map((issue) => (
+                  <li key={issue} className="helper">{issue}</li>
+                ))}
+              </ul>
+            </>
+          ) : null}
           <ul>
             {runtimeDiagnostics.guidance.map((item) => (
               <li key={item} className="helper">{item}</li>

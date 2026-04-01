@@ -219,4 +219,47 @@ describe("DebateManager", () => {
     expect(applyResult.applied).toBe(true);
     expect(applyResult.changedFiles).toEqual(["a.txt"]);
   }, 20000);
+
+  it("blocks selective apply when selected files are stale or invalid", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "inno-test-rename-"));
+    await execFileAsync("git", ["init"], { cwd: tempDir });
+    await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
+    await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: tempDir });
+    await fs.writeFile(path.join(tempDir, "a.txt"), "line\n", "utf8");
+    await execFileAsync("git", ["add", "."], { cwd: tempDir });
+    await execFileAsync("git", ["commit", "-m", "init"], { cwd: tempDir });
+    const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), "inno-manual-rename-sandbox-"));
+    await fs.cp(tempDir, sandbox, { recursive: true });
+    await execFileAsync("git", ["mv", "a.txt", "renamed.txt"], { cwd: sandbox });
+
+    const manager = new DebateManager(new FakeRuntime());
+    const applyResult = await manager.applyFromExactPreviewArtifact({
+      projectPath: tempDir,
+      sandboxPath: sandbox,
+      applyMode: "exact_selected_files",
+      selectedFiles: ["renamed.txt"],
+      config: { ...config, validationCommands: ["echo ok"] }
+    });
+
+    expect(applyResult.applied).toBe(false);
+    expect(applyResult.blockedReasons?.[0]).toContain("No files selected");
+  }, 20000);
+
+  it("throws abort error when apply flow starts with aborted signal", async () => {
+    const rt = new FakeRuntime();
+    const manager = new DebateManager(rt);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      manager.applyApprovedPlan({
+        task: "Do task",
+        finalPlan: "plan",
+        approved: true,
+        projectPath: process.cwd(),
+        config: { ...config, validationCommands: ["echo ok"], repairAttempts: 0, approvalRequiredForApply: false },
+        signal: controller.signal
+      })
+    ).rejects.toThrowError(/cancelled|abort/i);
+  });
 });

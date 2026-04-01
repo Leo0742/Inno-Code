@@ -53,6 +53,27 @@ function createClientStreamId(prefix: "plan" | "apply") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function stageLabelFromStatus(status: string): string {
+  const labels: Record<string, string> = {
+    idle: "Idle",
+    planning: "Planning",
+    planning_verdict: "Planning Verdict",
+    pending_review: "Pending Review",
+    generating_exact_preview: "Generating Exact Preview",
+    exact_preview_ready: "Exact Preview Ready",
+    exact_preview_unavailable: "Predicted Preview Only",
+    applying: "Applying",
+    validating: "Validating",
+    repairing: "Repairing",
+    applied: "Applied",
+    blocked: "Blocked",
+    cancelled: "Cancelled",
+    discarded: "Discarded",
+    error: "Failed"
+  };
+  return labels[status] ?? status;
+}
+
 export function App() {
   const [projectPath, setProjectPath] = useState("");
   const [task, setTask] = useState("Implement provider settings and validation.");
@@ -74,8 +95,9 @@ export function App() {
     openClaudeCliAvailable: boolean;
     openClaudeVersion: string;
     providerConfigurationOwner: string;
+    startupIssues?: string[];
     guidance: string[];
-    lastRuntimeFailure: null | { at: string; message: string };
+    lastRuntimeFailure: null | { at: string; kind?: string; message: string };
   } | null>(null);
   const [previewMode, setPreviewMode] = useState<"predicted" | "exact">("predicted");
   const [exactPreviewReason, setExactPreviewReason] = useState("");
@@ -225,7 +247,12 @@ export function App() {
       setValidationReport(result.validationReport);
       setDiff(result.diff);
       setStatus(result.status);
-      setSessionId("");
+      if (result.status === "applied") {
+        setSessionId("");
+      }
+      if (result.status === "blocked") {
+        setLogs((prev) => [...prev, `Apply blocked: ${result.validationReport}`]);
+      }
       await refreshPendingSessions();
     } catch (error) {
       const message = String(error);
@@ -273,8 +300,14 @@ export function App() {
       }
       await refreshPendingSessions();
     } catch (error) {
-      setStatus("error");
-      setLogs((prev) => [...prev, `Exact preview failed: ${String(error)}`]);
+      const message = String(error);
+      if (message.includes("cancelled")) {
+        setStatus("cancelled");
+        setLogs((prev) => [...prev, "Exact preview generation was cancelled by user."]);
+      } else {
+        setStatus("error");
+        setLogs((prev) => [...prev, `Exact preview failed: ${message}`]);
+      }
     } finally {
       setIsRunning(false);
       setActiveStreamId("");
@@ -357,6 +390,7 @@ export function App() {
         <DebateTimeline grouped={grouped} />
         <ReviewPanel
           status={status}
+          stageLabel={stageLabelFromStatus(status)}
           finalPlan={finalPlan}
           validationReport={validationReport}
           diff={diff}
@@ -365,6 +399,8 @@ export function App() {
           implementationChecklist={implementationChecklist}
           approvalRequired={settings.approvalRequiredForApply}
           canApply={Boolean(sessionId) && !isRunning}
+          applyDisabledReason={!sessionId ? "Open a pending review session to enable apply/discard actions." : isRunning ? "Another run is currently active. Wait for it to complete or cancel it first." : ""}
+          exactPreviewDisabledReason={!sessionId ? "Open a pending review session to generate exact preview." : isRunning ? "Cannot generate exact preview while another run is active." : ""}
           previewMode={previewMode}
           exactPreviewReason={exactPreviewReason}
           exactPreviewDiff={exactPreviewDiff}

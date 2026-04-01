@@ -48,15 +48,27 @@ Inno Code is a desktop coding assistant (Electron + React) that runs multi-agent
 - Provider selection, API keys, and account/runtime auth are explicitly documented as managed by openclaude runtime outside Inno Code.
 - Added lightweight runtime diagnostics in settings:
   - openclaude CLI availability/version probe,
-  - last runtime invocation failure summary,
+  - startup issue recovery notes (stale sandbox cleanup/reconcile),
+  - last runtime invocation failure summary with failure kind,
   - troubleshooting guidance and responsibility split.
+
+### Reliability hardening in this phase
+- Pending session restore now sanitizes malformed persisted entries instead of reviving partial/broken sessions.
+- Exact preview lifecycle is hardened for repeated regeneration and cancellation:
+  - old preview artifacts are cleaned first,
+  - cancelled preview generation explicitly degrades the session back to predicted mode with a reason.
+- Apply/discard cleanup paths now use safe, repeatable exact-preview sandbox cleanup.
+- Selective apply now returns explicit blocked reasons when exact artifacts are missing or stale.
+- Startup now records recoverable issues (restore/cleanup/CLI checks) in diagnostics instead of silently swallowing them.
+- Startup detects openclaude CLI availability and surfaces first-run/runtime dependency guidance.
 
 ## Intentionally deferred in this phase
 - Line-level editing/apply inside review.
 - Exact pre-apply patch generation parity with post-apply output.
 - Full provider/key management replacement inside Inno Code.
 - IDE-grade diff/editor UX.
-- Remaining production hardening (packaging polish, broader reliability/perf/security hardening).
+- Full installer/first-run wizard experience.
+- Broad enterprise/perf/security platform work.
 
 ## Architecture split
 - `packages/engine`: single source of truth for debate orchestration, apply policy, validation loop, runtime event normalization.

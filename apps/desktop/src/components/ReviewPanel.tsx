@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 interface Props {
   status: string;
+  stageLabel: string;
   finalPlan: string;
   validationReport: string;
   diff: string;
@@ -10,6 +11,8 @@ interface Props {
   implementationChecklist: string[];
   approvalRequired: boolean;
   canApply: boolean;
+  applyDisabledReason: string;
+  exactPreviewDisabledReason: string;
   previewMode: "predicted" | "exact";
   exactPreviewReason: string;
   exactPreviewDiff: string;
@@ -62,6 +65,7 @@ function parseDiffByFile(rawDiff: string): ParsedDiffFile[] {
 
 export function ReviewPanel({
   status,
+  stageLabel,
   finalPlan,
   validationReport,
   diff,
@@ -70,6 +74,8 @@ export function ReviewPanel({
   implementationChecklist,
   approvalRequired,
   canApply,
+  applyDisabledReason,
+  exactPreviewDisabledReason,
   previewMode,
   exactPreviewReason,
   exactPreviewDiff,
@@ -115,17 +121,18 @@ export function ReviewPanel({
     <section className="panel">
       <h3>Review / Apply</h3>
       <p>
-        Status: <strong>{status}</strong>
+        Stage: <strong>{stageLabel}</strong> <span className="helper">({status})</span>
         {approvalRequired ? " (approval required)" : ""}
       </p>
       <div className="actions">
-        <button disabled={!canApply} onClick={onGenerateExactPreview}>Generate Exact Preview</button>
-        <button disabled={!canApply} onClick={onApply}>Apply Approved Plan (Legacy Full)</button>
+        <button disabled={!canApply} title={canApply ? "Regenerate exact preview sandbox using the approved plan." : exactPreviewDisabledReason} onClick={onGenerateExactPreview}>Generate Exact Preview</button>
+        <button disabled={!canApply} title={canApply ? "Applies by rerunning implementer directly in your repo." : applyDisabledReason} onClick={onApply}>Apply Approved Plan (Legacy Full)</button>
         <button disabled={!canApply || previewMode !== "exact"} onClick={onApplyAllExact}>Apply All</button>
         <button disabled={!canApply || previewMode !== "exact" || selectedFiles.length === 0} onClick={onApplySelectedExact}>Apply Selected Files</button>
         <button disabled={!canApply || previewMode !== "exact" || selectedHunks.length === 0} onClick={onApplySelectedHunksExact}>Apply Selected Hunks</button>
         <button disabled={!canApply} className="button-danger" onClick={onDiscard}>Discard Pending Plan</button>
       </div>
+      {!canApply ? <p className="helper">{applyDisabledReason}</p> : null}
       {previewMode !== "exact" ? (
         <p className="helper">Selective apply is disabled until an exact sandbox preview is available. {exactPreviewReason}</p>
       ) : null}
