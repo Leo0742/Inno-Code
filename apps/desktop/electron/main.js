@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 
 const runtime = new OpenClaudeCliRuntime();
 const manager = new DebateManager(runtime);
-const pendingPlans = createPendingPlanStore();
+let pendingPlans;
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -32,6 +32,10 @@ function getSettingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
 }
 
+function getPendingPlansPath() {
+  return path.join(app.getPath("userData"), "pending-plans.json");
+}
+
 async function loadSettings() {
   try {
     const raw = await fs.readFile(getSettingsPath(), "utf8");
@@ -49,19 +53,20 @@ async function saveSettings(nextSettings) {
 }
 
 function createLiveCollector(event, streamId) {
-  const logs = [];
   const onLog = (runtimeEvent) => {
-    logs.push(`[${runtimeEvent.type}] ${runtimeEvent.message}`);
     event.sender.send("runtime:event", {
       streamId,
       ts: Date.now(),
       event: runtimeEvent
     });
   };
-  return { logs, onLog };
+  return { onLog };
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  pendingPlans = createPendingPlanStore({ filePath: getPendingPlansPath() });
+  await pendingPlans.restore();
+
   ipcMain.handle("project:pick", async () => {
     const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
     return result.filePaths[0] ?? "";
@@ -73,10 +78,14 @@ app.whenReady().then(() => {
     return saveSettings(nextSettings);
   });
 
+  ipcMain.handle("pending:get", async () => {
+    return pendingPlans.list();
+  });
+
   ipcMain.handle("debate:plan", async (event, payload) => {
-    const streamId = `plan-${Date.now()}`;
+    const streamId = payload.streamId || `plan-${Date.now()}`;
     const settings = await loadSettings();
-    const { logs, onLog } = createLiveCollector(event, streamId);
+    const { onLog } = createLiveCollector(event, streamId);
     const plan = await manager.runPlanning({
       task: payload.task,
       projectPath: payload.projectPath,
@@ -84,22 +93,25 @@ app.whenReady().then(() => {
       onLog
     });
     const sessionId = `${Date.now()}`;
-    pendingPlans.set(sessionId, {
+    await pendingPlans.set(sessionId, {
       task: payload.task,
       projectPath: payload.projectPath,
       finalPlan: plan.finalPlan,
-      settings
+      settings,
+      proposedDiff: plan.proposedDiff,
+      predictedChangedFiles: plan.predictedChangedFiles,
+      implementationChecklist: plan.implementationChecklist,
+      createdAt: new Date().toISOString()
     });
-    return { ...plan, streamId, sessionId, logs, status: "pending_review" };
+    return { ...plan, streamId, sessionId, status: "pending_review" };
   });
 
   ipcMain.handle("debate:apply", async (event, payload) => {
-    const streamId = `apply-${Date.now()}`;
+    const streamId = payload.streamId || `apply-${Date.now()}`;
     const session = pendingPlans.get(payload.sessionId);
     if (!session) {
       return {
         streamId,
-        logs: ["No pending plan found for this session."],
         validationReport: "Missing pending session.",
         validationResults: [],
         diff: "No diff generated.",
@@ -109,7 +121,7 @@ app.whenReady().then(() => {
       };
     }
 
-    const { logs, onLog } = createLiveCollector(event, streamId);
+    const { onLog } = createLiveCollector(event, streamId);
     const result = await manager.applyApprovedPlan({
       task: session.task,
       projectPath: session.projectPath,
@@ -120,14 +132,14 @@ app.whenReady().then(() => {
     });
 
     if (result.applied || payload.approved === false) {
-      pendingPlans.delete(payload.sessionId);
+      await pendingPlans.delete(payload.sessionId);
     }
 
-    return { ...result, streamId, logs, status: result.applied ? "applied" : "blocked" };
+    return { ...result, streamId, status: result.applied ? "applied" : "blocked" };
   });
 
   ipcMain.handle("debate:discard", async (_evt, payload) => {
-    pendingPlans.delete(payload.sessionId);
+    await pendingPlans.delete(payload.sessionId);
     return { ok: true };
   });
 

@@ -10,6 +10,24 @@ interface RuntimeEventPayload {
   };
 }
 
+interface PendingPlanSession {
+  sessionId: string;
+  task: string;
+  projectPath: string;
+  finalPlan: string;
+  settings: {
+    rounds: number;
+    repairAttempts: number;
+    approvalRequiredForApply: boolean;
+    validationCommands: string[];
+    roleModelMap: Record<string, string>;
+  };
+  proposedDiff?: string;
+  predictedChangedFiles?: string[];
+  implementationChecklist?: string[];
+  createdAt?: string;
+}
+
 interface Window {
   innoCode: {
     version: string;
@@ -34,7 +52,8 @@ interface Window {
       validationCommands: string[];
       roleModelMap: Record<string, string>;
     }>;
-    runPlan: (payload: { task: string; projectPath: string }) => Promise<{
+    getPendingPlans: () => Promise<PendingPlanSession[]>;
+    runPlan: (payload: { task: string; projectPath: string; streamId: string }) => Promise<{
       streamId: string;
       sessionId: string;
       messages: Array<{ role: string; phase: string; round: number; model: string; content: string }>;
@@ -43,17 +62,15 @@ interface Window {
       predictedChangedFiles: string[];
       implementationChecklist: string[];
       approvalRequired: boolean;
-      logs: string[];
       status: string;
     }>;
-    applyPlan: (payload: { sessionId: string; approved: boolean }) => Promise<{
+    applyPlan: (payload: { sessionId: string; approved: boolean; streamId: string }) => Promise<{
       streamId: string;
       messages: Array<{ role: string; phase: string; round: number; model: string; content: string }>;
       validationReport: string;
       validationResults: Array<{ command: string; exitCode: number; output: string }>;
       diff: string;
       applied: boolean;
-      logs: string[];
       status: string;
     }>;
     discardPlan: (payload: { sessionId: string }) => Promise<{ ok: true }>;

@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld("innoCode", {
   pickProject: () => ipcRenderer.invoke("project:pick"),
   getSettings: () => ipcRenderer.invoke("settings:get"),
   saveSettings: (settings) => ipcRenderer.invoke("settings:save", settings),
+  getPendingPlans: () => ipcRenderer.invoke("pending:get"),
   runPlan: (payload) => ipcRenderer.invoke("debate:plan", payload),
   applyPlan: (payload) => ipcRenderer.invoke("debate:apply", payload),
   discardPlan: (payload) => ipcRenderer.invoke("debate:discard", payload),
