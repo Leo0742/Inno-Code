@@ -1,0 +1,22 @@
+{
+  "providers": [
+    {
+      "id": "openai-main",
+      "name": "OpenAI Compatible",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKeyRef": "OPENAI_API_KEY"
+    },
+    {
+      "id": "local-llm",
+      "name": "Local Gateway",
+      "baseUrl": "http://localhost:1234/v1",
+      "apiKeyRef": "LOCAL_LLM_KEY"
+    }
+  ],
+  "models": [
+    { "id": "architect-model", "providerId": "openai-main", "model": "gpt-4.1" },
+    { "id": "critic-model", "providerId": "openai-main", "model": "gpt-4.1-mini" },
+    { "id": "implementer-model", "providerId": "local-llm", "model": "qwen2.5-coder" },
+    { "id": "judge-model", "providerId": "openai-main", "model": "gpt-4.1" }
+  ]
+}

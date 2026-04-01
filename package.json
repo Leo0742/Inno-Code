@@ -1,0 +1,16 @@
+{
+  "name": "inno-code",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Inno Code desktop MVP with multi-agent debate orchestration built on openclaude-compatible engine abstractions.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run -w @inno/engine build && npm run -w @inno/desktop build",
+    "dev": "npm run -w @inno/desktop dev",
+    "test": "npm run -w @inno/engine test",
+    "typecheck": "npm run -w @inno/engine typecheck && npm run -w @inno/desktop typecheck"
+  }
+}
