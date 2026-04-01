@@ -5,6 +5,7 @@ body { margin: 0; font-family: Inter, sans-serif; background: #0f172a; color: #e
 .main { overflow: auto; }
 .logs { overflow: auto; }
 textarea, input { width: 100%; background: #0b1220; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; margin-bottom: 8px; }
+input[type="checkbox"] { width: auto; margin-bottom: 0; }
 button { background: #2563eb; color: white; border: none; border-radius: 6px; padding: 8px 12px; margin-right: 8px; cursor: pointer; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 .button-secondary { background: #334155; }

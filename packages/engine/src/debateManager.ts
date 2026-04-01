@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 import { AbortRunError, isAbortError } from "./runtime.js";
 import type {
@@ -8,6 +11,7 @@ import type {
   DebateMessage,
   DebateRunInput,
   DebatePhase,
+  ExactPreviewResult,
   PlanRunResult,
   RuntimeClient,
   RuntimeEvent,
@@ -124,7 +128,9 @@ export class DebateManager {
         validationReport: "Apply blocked: explicit approval is required.",
         validationResults: [],
         diff: "No diff generated.",
-        applied: false
+        applied: false,
+        applyMode: "runtime_full",
+        changedFiles: []
       };
     }
 
@@ -180,7 +186,118 @@ export class DebateManager {
       validationReport,
       validationResults,
       diff,
-      applied: true
+      applied: true,
+      applyMode: "runtime_full",
+      changedFiles: await this.collectChangedFiles(input.projectPath, input.signal)
+    };
+  }
+
+  async generateExactPreview(input: DebateRunInput & { finalPlan: string }): Promise<ExactPreviewResult> {
+    throwIfAborted(input.signal);
+    if (!(await this.isGitRepository(input.projectPath, input.signal))) {
+      return this.createPredictedFallback("Exact preview unavailable: project is not a git repository.");
+    }
+
+    if (!(await this.isCleanWorkingTree(input.projectPath, input.signal))) {
+      return this.createPredictedFallback(
+        "Exact preview unavailable: working tree has uncommitted changes, which makes sandbox preview misleading."
+      );
+    }
+
+    const sandboxPath = await fs.mkdtemp(path.join(os.tmpdir(), "inno-preview-"));
+    let attached = false;
+    try {
+      await this.runGit(input.projectPath, ["worktree", "add", "--detach", sandboxPath, "HEAD"], input.signal);
+      attached = true;
+      const implementerModel = input.config.roleModelMap.implementer;
+      emitPhase(input.onLog, "revision", "implementer started (exact preview sandbox)", "implementer");
+      await this.runtime.runTurn({
+        projectPath: sandboxPath,
+        model: implementerModel,
+        permissionMode: "acceptEdits",
+        onEvent: input.onLog,
+        signal: input.signal,
+        prompt: `Apply this approved plan exactly, then stop.\n\nTask:\n${input.task}\n\nApproved plan:\n${input.finalPlan}`
+      });
+      emitPhase(input.onLog, "revision", "implementer finished (exact preview sandbox)", "implementer");
+
+      const changedFiles = await this.collectChangedFiles(sandboxPath, input.signal);
+      const diff = await this.collectDiff(sandboxPath, input.signal);
+      const validationResults = await this.runValidationCommands(sandboxPath, input.config, input.onLog, input.signal);
+      const validationReport = formatValidationReport(validationResults);
+
+      return {
+        exactPreviewAvailable: true,
+        previewMode: "exact",
+        sandboxPath,
+        changedFiles,
+        diff,
+        validationReport,
+        validationResults
+      };
+    } catch (error) {
+      if (attached) {
+        await this.cleanupWorktree(input.projectPath, sandboxPath);
+      } else {
+        await fs.rm(sandboxPath, { recursive: true, force: true });
+      }
+      if (isAbortError(error)) throw error;
+      return this.createPredictedFallback(`Exact preview failed: ${(error as Error).message}`);
+    }
+  }
+
+  async cleanupExactPreview(projectPath: string, sandboxPath: string): Promise<void> {
+    await this.cleanupWorktree(projectPath, sandboxPath);
+  }
+
+  async applyFromExactPreviewArtifact(input: {
+    projectPath: string;
+    sandboxPath: string;
+    selectedFiles?: string[];
+    config: DebateConfig;
+    onLog?: (event: RuntimeEvent) => void;
+    signal?: AbortSignal;
+  }): Promise<ApplyRunResult> {
+    throwIfAborted(input.signal);
+    const changedFiles = await this.collectChangedFiles(input.sandboxPath, input.signal);
+    const fileSet = new Set(changedFiles);
+    const selected = input.selectedFiles?.length ? input.selectedFiles.filter((file) => fileSet.has(file)) : changedFiles;
+    if (!selected.length) {
+      return {
+        messages: [],
+        validationReport: "Apply blocked: no selectable files found in exact preview artifact.",
+        validationResults: [],
+        diff: "No diff generated.",
+        applied: false,
+        applyMode: input.selectedFiles?.length ? "exact_selected" : "exact_all",
+        changedFiles: []
+      };
+    }
+
+    const statusMap = await this.collectNameStatus(input.sandboxPath, input.signal);
+    for (const filePath of selected) {
+      throwIfAborted(input.signal);
+      const sourcePath = path.join(input.sandboxPath, filePath);
+      const targetPath = path.join(input.projectPath, filePath);
+      if (statusMap.get(filePath) === "D") {
+        await fs.rm(targetPath, { force: true });
+        continue;
+      }
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.copyFile(sourcePath, targetPath);
+    }
+
+    emitPhase(input.onLog, "validation", "validation started");
+    const validationResults = await this.runValidationCommands(input.projectPath, input.config, input.onLog, input.signal);
+    emitPhase(input.onLog, "validation", "validation completed");
+    return {
+      messages: [],
+      validationReport: formatValidationReport(validationResults),
+      validationResults,
+      diff: await this.collectDiff(input.projectPath, input.signal),
+      applied: true,
+      applyMode: input.selectedFiles?.length ? "exact_selected" : "exact_all",
+      changedFiles: selected
     };
   }
 
@@ -266,5 +383,81 @@ export class DebateManager {
       signal
     });
     return stdout || "No diff generated.";
+  }
+
+  private async collectChangedFiles(projectPath: string, signal?: AbortSignal): Promise<string[]> {
+    throwIfAborted(signal);
+    const { stdout } = await execFileAsync("git", ["-C", projectPath, "diff", "--name-only", "--", "."], {
+      maxBuffer: 10 * 1024 * 1024,
+      signal
+    });
+    return stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  private async collectNameStatus(projectPath: string, signal?: AbortSignal): Promise<Map<string, string>> {
+    throwIfAborted(signal);
+    const { stdout } = await execFileAsync("git", ["-C", projectPath, "diff", "--name-status", "--", "."], {
+      maxBuffer: 10 * 1024 * 1024,
+      signal
+    });
+    const map = new Map<string, string>();
+    for (const line of stdout.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const [status, filePath] = trimmed.split(/\s+/, 2);
+      if (!status || !filePath) continue;
+      map.set(filePath, status);
+    }
+    return map;
+  }
+
+  private async isGitRepository(projectPath: string, signal?: AbortSignal): Promise<boolean> {
+    try {
+      await execFileAsync("git", ["-C", projectPath, "rev-parse", "--is-inside-work-tree"], {
+        maxBuffer: 1024 * 1024,
+        signal
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async isCleanWorkingTree(projectPath: string, signal?: AbortSignal): Promise<boolean> {
+    const { stdout } = await execFileAsync("git", ["-C", projectPath, "status", "--porcelain"], {
+      maxBuffer: 10 * 1024 * 1024,
+      signal
+    });
+    return stdout.trim().length === 0;
+  }
+
+  private async runGit(projectPath: string, args: string[], signal?: AbortSignal): Promise<void> {
+    await execFileAsync("git", ["-C", projectPath, ...args], {
+      maxBuffer: 10 * 1024 * 1024,
+      signal
+    });
+  }
+
+  private async cleanupWorktree(projectPath: string, sandboxPath: string): Promise<void> {
+    await execFileAsync("git", ["-C", projectPath, "worktree", "remove", "--force", sandboxPath], {
+      maxBuffer: 10 * 1024 * 1024
+    }).catch(async () => {
+      await fs.rm(sandboxPath, { recursive: true, force: true });
+    });
+  }
+
+  private createPredictedFallback(reason: string): ExactPreviewResult {
+    return {
+      exactPreviewAvailable: false,
+      previewMode: "predicted",
+      reason,
+      changedFiles: [],
+      diff: "No exact preview diff generated.",
+      validationReport: "No validation output for exact preview.",
+      validationResults: []
+    };
   }
 }

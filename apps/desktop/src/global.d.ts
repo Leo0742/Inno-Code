@@ -25,6 +25,16 @@ interface PendingPlanSession {
   proposedDiff?: string;
   predictedChangedFiles?: string[];
   implementationChecklist?: string[];
+  exactPreview?: {
+    exactPreviewAvailable: boolean;
+    previewMode: "exact" | "predicted";
+    reason?: string;
+    sandboxPath?: string;
+    changedFiles: string[];
+    diff: string;
+    validationReport: string;
+    createdAt?: string;
+  } | null;
   createdAt?: string;
 }
 
@@ -53,6 +63,13 @@ interface Window {
       roleModelMap: Record<string, string>;
     }>;
     getPendingPlans: () => Promise<PendingPlanSession[]>;
+    getRuntimeDiagnostics: () => Promise<{
+      openClaudeCliAvailable: boolean;
+      openClaudeVersion: string;
+      providerConfigurationOwner: "openclaude_runtime";
+      guidance: string[];
+      lastRuntimeFailure: null | { at: string; message: string };
+    }>;
     runPlan: (payload: { task: string; projectPath: string; streamId: string }) => Promise<{
       streamId: string;
       sessionId: string;
@@ -64,12 +81,31 @@ interface Window {
       approvalRequired: boolean;
       status: string;
     }>;
-    applyPlan: (payload: { sessionId: string; approved: boolean; streamId: string }) => Promise<{
+    generateExactPreview: (payload: { sessionId: string; streamId: string }) => Promise<{
+      streamId: string;
+      exactPreviewAvailable: boolean;
+      previewMode: "exact" | "predicted";
+      reason?: string;
+      sandboxPath?: string;
+      changedFiles: string[];
+      diff: string;
+      validationReport: string;
+      validationResults: Array<{ command: string; exitCode: number; output: string }>;
+    }>;
+    applyPlan: (payload: {
+      sessionId: string;
+      approved: boolean;
+      streamId: string;
+      applyMode?: "runtime_full" | "exact_all" | "exact_selected";
+      selectedFiles?: string[];
+    }) => Promise<{
       streamId: string;
       messages: Array<{ role: string; phase: string; round: number; model: string; content: string }>;
       validationReport: string;
       validationResults: Array<{ command: string; exitCode: number; output: string }>;
       diff: string;
+      changedFiles: string[];
+      applyMode: "runtime_full" | "exact_all" | "exact_selected";
       applied: boolean;
       status: string;
     }>;
