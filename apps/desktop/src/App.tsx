@@ -44,6 +44,15 @@ function deriveStatusFromEvent(type: string, phase?: string): string | null {
   return null;
 }
 
+
+function isRuntimeEventForActiveStream(activeStreamId: string, incomingStreamId: string) {
+  return Boolean(activeStreamId) && activeStreamId === incomingStreamId;
+}
+
+function createClientStreamId(prefix: "plan" | "apply") {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export function App() {
   const [projectPath, setProjectPath] = useState("");
   const [task, setTask] = useState("Implement provider settings and validation.");
@@ -59,17 +68,37 @@ export function App() {
   const [sessionId, setSessionId] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [activeStreamId, setActiveStreamId] = useState("");
 
   useEffect(() => {
     window.innoCode.getSettings().then((saved) => setSettings(saved));
+    window.innoCode.getPendingPlans().then((pendingPlans) => {
+      if (pendingPlans.length === 0) return;
+      const latest = pendingPlans
+        .slice()
+        .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""))
+        .at(-1);
+      if (!latest) return;
+      setSessionId(latest.sessionId);
+      setTask(latest.task);
+      setProjectPath(latest.projectPath);
+      setFinalPlan(latest.finalPlan);
+      setProposedDiff(latest.proposedDiff ?? "");
+      setPredictedChangedFiles(latest.predictedChangedFiles ?? []);
+      setImplementationChecklist(latest.implementationChecklist ?? []);
+      setStatus("pending_review");
+      setLogs((prev) => [...prev, `Restored pending review session ${latest.sessionId}.`]);
+    });
+
     const unsubscribe = window.innoCode.onRuntimeEvent((payload) => {
+      if (!isRuntimeEventForActiveStream(activeStreamId, payload.streamId)) return;
       const line = `[${payload.event.type}] ${payload.event.message}`;
       setLogs((prev) => [...prev, line]);
       const nextStatus = deriveStatusFromEvent(payload.event.type, payload.event.phase);
       if (nextStatus) setStatus(nextStatus);
     });
     return () => unsubscribe();
-  }, []);
+  }, [activeStreamId]);
 
   const grouped = useMemo(() => {
     return messages.reduce<Record<string, DebateMessage[]>>((acc, m) => {
@@ -90,14 +119,15 @@ export function App() {
       return;
     }
 
+    const streamId = createClientStreamId("plan");
+    setActiveStreamId(streamId);
     setIsRunning(true);
     setStatus("planning");
     setValidationReport("");
     setDiff("");
     setLogs([]);
     try {
-      const result = await window.innoCode.runPlan({ task, projectPath });
-      setLogs((prev) => [...prev, ...result.logs]);
+      const result = await window.innoCode.runPlan({ task, projectPath, streamId });
       setMessages(result.messages);
       setFinalPlan(result.finalPlan);
       setProposedDiff(result.proposedDiff);
@@ -110,16 +140,18 @@ export function App() {
       setLogs((prev) => [...prev, `Planning failed: ${String(error)}`]);
     } finally {
       setIsRunning(false);
+      setActiveStreamId("");
     }
   }
 
   async function handleApply() {
     if (!sessionId || isRunning) return;
+    const streamId = createClientStreamId("apply");
+    setActiveStreamId(streamId);
     setIsRunning(true);
     setStatus("applying");
     try {
-      const result = await window.innoCode.applyPlan({ sessionId, approved: true });
-      setLogs((prev) => [...prev, ...result.logs]);
+      const result = await window.innoCode.applyPlan({ sessionId, approved: true, streamId });
       setMessages((prev) => [...prev, ...result.messages]);
       setValidationReport(result.validationReport);
       setDiff(result.diff);
@@ -130,6 +162,7 @@ export function App() {
       setLogs((prev) => [...prev, `Apply failed: ${String(error)}`]);
     } finally {
       setIsRunning(false);
+      setActiveStreamId("");
     }
   }
 

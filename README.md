@@ -6,9 +6,10 @@ Inno Code is a desktop coding assistant (Electron + React) that runs multi-agent
 
 ### What works now
 - Engine-owned orchestration path for debate planning and apply/validation.
-- Desktop app with staged flow: **plan → pending review → apply/discard → validation**.
-- **Live runtime event streaming** from Electron main to renderer for planning/apply progress.
+- Desktop app with staged flow: **plan → pending review → apply/discard → validation**, including pending session restore after restart.
+- **Live runtime event streaming** from Electron main to renderer for planning/apply progress, isolated by active `streamId`.
 - Persisted settings (rounds, repair attempts, validation commands, approval requirement, role model map).
+- Live log rendering now uses streamed runtime events as the single source of truth (no end-of-run duplicate log replay).
 - Editable role-to-model mappings for architect, critic, implementer, judge, verifier.
 - Local command-based validation execution with real command exit codes.
 - Verifier model used as a **post-validation summarizer** (not as command executor).
