@@ -77,3 +77,26 @@ test("pending plan store persists and restores pending review sessions", async (
   assert.deepEqual(restoredSessions[0].predictedChangedFiles, ["src/a.ts"]);
   assert.deepEqual(restoredStore.get("session-1")?.implementationChecklist, ["write tests"]);
 });
+
+test("pending plan store can reconcile stale exact preview metadata", async () => {
+  const memoryFs = createMemoryFs();
+  const store = createPendingPlanStore({ filePath: "/tmp/pending.json", fsModule: memoryFs });
+  await store.set("session-1", {
+    task: "t",
+    exactPreview: { exactPreviewAvailable: true, sandboxPath: "/tmp/missing", changedFiles: ["a"], diff: "x", validationReport: "y" }
+  });
+
+  await store.reconcileExactPreviews(async (session) => ({
+    ...session,
+    exactPreview: {
+      exactPreviewAvailable: false,
+      previewMode: "predicted",
+      reason: "missing",
+      changedFiles: [],
+      diff: "No exact preview diff generated.",
+      validationReport: "No validation output for exact preview."
+    }
+  }));
+
+  assert.equal(store.get("session-1")?.exactPreview?.exactPreviewAvailable, false);
+});

@@ -107,6 +107,26 @@ async function getRuntimeDiagnostics() {
 app.whenReady().then(async () => {
   pendingPlans = createPendingPlanStore({ filePath: getPendingPlansPath() });
   await pendingPlans.restore();
+  await manager.cleanupStalePreviewSandboxes().catch(() => {});
+  await pendingPlans.reconcileExactPreviews(async (session) => {
+    if (!session?.exactPreview?.sandboxPath) return session;
+    try {
+      await fs.access(session.exactPreview.sandboxPath);
+      return session;
+    } catch {
+      return {
+        ...session,
+        exactPreview: {
+          exactPreviewAvailable: false,
+          previewMode: "predicted",
+          reason: "Exact preview sandbox is no longer available. Regenerate preview to continue.",
+          changedFiles: [],
+          diff: "No exact preview diff generated.",
+          validationReport: "No validation output for exact preview."
+        }
+      };
+    }
+  });
 
   ipcMain.handle("project:pick", async () => {
     const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
@@ -187,7 +207,7 @@ app.whenReady().then(async () => {
 
     try {
       let result;
-      if (payload.applyMode === "exact_selected" || payload.applyMode === "exact_all") {
+      if (payload.applyMode === "exact_selected_files" || payload.applyMode === "exact_selected_hunks" || payload.applyMode === "exact_all") {
         const exactPreview = session.exactPreview;
         if (!exactPreview?.exactPreviewAvailable || !exactPreview.sandboxPath) {
           return {
@@ -205,7 +225,9 @@ app.whenReady().then(async () => {
         result = await manager.applyFromExactPreviewArtifact({
           projectPath: session.projectPath,
           sandboxPath: exactPreview.sandboxPath,
+          applyMode: payload.applyMode,
           selectedFiles: payload.selectedFiles,
+          selectedHunks: payload.selectedHunks,
           config: session.settings,
           onLog,
           signal: abortController.signal
@@ -300,9 +322,11 @@ app.whenReady().then(async () => {
           previewMode: preview.previewMode,
           reason: preview.reason,
           sandboxPath: preview.sandboxPath,
+          sandboxKind: preview.sandboxKind,
           changedFiles: preview.changedFiles,
           diff: preview.diff,
           validationReport: preview.validationReport,
+          unsupportedFiles: preview.unsupportedFiles,
           createdAt: new Date().toISOString()
         }
       });

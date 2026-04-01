@@ -24,12 +24,12 @@ Inno Code is a desktop coding assistant (Electron + React) that runs multi-agent
   - **Predicted preview** (model-only, pre-execution estimate)
   - **Exact sandbox preview** (real diff generated in disposable git worktree)
 - Exact sandbox preview:
-  - requires a clean working tree,
-  - runs approved plan in disposable worktree,
+  - uses disposable **worktree sandbox** when repo is clean,
+  - uses disposable **copy sandbox** when repo is dirty (no stash/reset/commit in real repo),
   - captures exact changed files + exact diff + optional validation output,
   - never mutates the real repository during preview generation,
   - is cleaned up when discarded/applied.
-- If exact preview is unavailable (dirty repo/non-git/runtime failure), UI and logs clearly label fallback to predicted mode.
+- If exact preview is unavailable (non-git/runtime failure), UI and logs clearly label fallback to predicted mode.
 - Predicted preview is still structured as:
   - implementation checklist,
   - predicted changed files,
@@ -37,8 +37,10 @@ Inno Code is a desktop coding assistant (Electron + React) that runs multi-agent
 - Apply modes now include:
   - legacy full apply (runtime directly in repo),
   - apply all files from exact preview artifact,
-  - apply selected files from exact preview artifact.
-- Selective apply is intentionally file-level only (no hunk-level apply yet).
+  - apply selected files from exact preview artifact,
+  - apply selected hunks from exact preview artifact.
+- Selective apply is patch-based from the exact preview diff artifact (not model-predicted text).
+- Unsupported selective patch cases (for example rename/copy or binary patch cases) are explicitly blocked and explained.
 - Applied git diff can be reviewed by changed file as post-apply source of truth.
 
 ### Runtime/provider settings clarity
@@ -50,7 +52,7 @@ Inno Code is a desktop coding assistant (Electron + React) that runs multi-agent
   - troubleshooting guidance and responsibility split.
 
 ## Intentionally deferred in this phase
-- Partial/hunk apply (still full apply/discard only).
+- Line-level editing/apply inside review.
 - Exact pre-apply patch generation parity with post-apply output.
 - Full provider/key management replacement inside Inno Code.
 - IDE-grade diff/editor UX.

@@ -85,6 +85,18 @@ export function createPendingPlanStore({ filePath, fsModule = fs } = {}) {
       pendingPlans.delete(sessionId);
       await persist();
     },
+    async reconcileExactPreviews(reconciler) {
+      let changed = false;
+      for (const [sessionId, session] of pendingPlans.entries()) {
+        const nextSession = await reconciler(session, sessionId);
+        if (nextSession && nextSession !== session) {
+          pendingPlans.set(sessionId, nextSession);
+          changed = true;
+        }
+      }
+      if (changed) await persist();
+      return list();
+    },
     list,
     size() {
       return pendingPlans.size;

@@ -8,11 +8,14 @@
 - Validation + repair loop policy.
 - Runtime stream normalization to typed events.
 - Final result assembly (messages, reports, diffs).
+- Exact preview sandbox strategy (clean repo worktree vs dirty repo copy sandbox).
+- Exact preview artifact selective apply (all files / selected files / selected hunks).
 
 ### `apps/desktop/electron` (thin bridge)
 - IPC handlers only (`project:*`, `settings:*`, `debate:*`).
 - Settings persistence to local `userData/settings.json`.
 - Pending review session state (session id -> approved apply context).
+- Startup/session preview reconciliation for missing stale sandboxes.
 - Project picker + app lifecycle + window boot.
 
 ### `apps/desktop/src` (renderer UX)
@@ -54,5 +57,5 @@ Electron stores log lines as `[type] message` for renderer display.
 ## Known limitations
 
 - Proposed diff is advisory model output before apply.
-- No mid-run cancellation yet.
-- No partial apply/hunk selection yet.
+- Line-level apply/edit is intentionally deferred.
+- Selective apply blocks unsupported rename/copy and binary patch cases.
