@@ -7,5 +7,10 @@ contextBridge.exposeInMainWorld("innoCode", {
   saveSettings: (settings) => ipcRenderer.invoke("settings:save", settings),
   runPlan: (payload) => ipcRenderer.invoke("debate:plan", payload),
   applyPlan: (payload) => ipcRenderer.invoke("debate:apply", payload),
-  discardPlan: (payload) => ipcRenderer.invoke("debate:discard", payload)
+  discardPlan: (payload) => ipcRenderer.invoke("debate:discard", payload),
+  onRuntimeEvent: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on("runtime:event", listener);
+    return () => ipcRenderer.off("runtime:event", listener);
+  }
 });

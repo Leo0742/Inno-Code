@@ -10,7 +10,7 @@
   "scripts": {
     "build": "npm run -w @inno/engine build && npm run -w @inno/desktop build",
     "dev": "npm run -w @inno/desktop dev",
-    "test": "npm run -w @inno/engine test",
+    "test": "npm run -w @inno/engine test && npm run -w @inno/desktop test",
     "typecheck": "npm run -w @inno/engine typecheck && npm run -w @inno/desktop typecheck"
   }
 }

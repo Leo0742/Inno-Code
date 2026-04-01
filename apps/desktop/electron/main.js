@@ -3,27 +3,14 @@ import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { DebateManager, OpenClaudeCliRuntime } from "@inno/engine";
+import { createPendingPlanStore, defaultSettings, mergeSettings } from "./state.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const runtime = new OpenClaudeCliRuntime();
 const manager = new DebateManager(runtime);
-const pendingPlans = new Map();
-
-const defaultSettings = {
-  rounds: 3,
-  repairAttempts: 1,
-  approvalRequiredForApply: true,
-  validationCommands: ["npm test", "npm run typecheck", "npm run build"],
-  roleModelMap: {
-    architect: "gpt-4.1",
-    critic: "gpt-4.1-mini",
-    implementer: "gpt-4.1",
-    judge: "gpt-4.1",
-    verifier: "gpt-4.1-mini"
-  }
-};
+const pendingPlans = createPendingPlanStore();
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -48,7 +35,7 @@ function getSettingsPath() {
 async function loadSettings() {
   try {
     const raw = await fs.readFile(getSettingsPath(), "utf8");
-    return { ...defaultSettings, ...JSON.parse(raw) };
+    return mergeSettings(JSON.parse(raw));
   } catch {
     return defaultSettings;
   }
@@ -56,13 +43,21 @@ async function loadSettings() {
 
 async function saveSettings(nextSettings) {
   await fs.mkdir(path.dirname(getSettingsPath()), { recursive: true });
-  await fs.writeFile(getSettingsPath(), JSON.stringify(nextSettings, null, 2), "utf8");
-  return nextSettings;
+  const merged = mergeSettings(nextSettings);
+  await fs.writeFile(getSettingsPath(), JSON.stringify(merged, null, 2), "utf8");
+  return merged;
 }
 
-function createLogCollector() {
+function createLiveCollector(event, streamId) {
   const logs = [];
-  const onLog = (event) => logs.push(`[${event.type}] ${event.message}`);
+  const onLog = (runtimeEvent) => {
+    logs.push(`[${runtimeEvent.type}] ${runtimeEvent.message}`);
+    event.sender.send("runtime:event", {
+      streamId,
+      ts: Date.now(),
+      event: runtimeEvent
+    });
+  };
   return { logs, onLog };
 }
 
@@ -75,13 +70,13 @@ app.whenReady().then(() => {
   ipcMain.handle("settings:get", async () => loadSettings());
 
   ipcMain.handle("settings:save", async (_evt, nextSettings) => {
-    const merged = { ...defaultSettings, ...nextSettings };
-    return saveSettings(merged);
+    return saveSettings(nextSettings);
   });
 
-  ipcMain.handle("debate:plan", async (_evt, payload) => {
+  ipcMain.handle("debate:plan", async (event, payload) => {
+    const streamId = `plan-${Date.now()}`;
     const settings = await loadSettings();
-    const { logs, onLog } = createLogCollector();
+    const { logs, onLog } = createLiveCollector(event, streamId);
     const plan = await manager.runPlanning({
       task: payload.task,
       projectPath: payload.projectPath,
@@ -95,13 +90,15 @@ app.whenReady().then(() => {
       finalPlan: plan.finalPlan,
       settings
     });
-    return { ...plan, sessionId, logs, status: "pending_review" };
+    return { ...plan, streamId, sessionId, logs, status: "pending_review" };
   });
 
-  ipcMain.handle("debate:apply", async (_evt, payload) => {
+  ipcMain.handle("debate:apply", async (event, payload) => {
+    const streamId = `apply-${Date.now()}`;
     const session = pendingPlans.get(payload.sessionId);
     if (!session) {
       return {
+        streamId,
         logs: ["No pending plan found for this session."],
         validationReport: "Missing pending session.",
         validationResults: [],
@@ -112,7 +109,7 @@ app.whenReady().then(() => {
       };
     }
 
-    const { logs, onLog } = createLogCollector();
+    const { logs, onLog } = createLiveCollector(event, streamId);
     const result = await manager.applyApprovedPlan({
       task: session.task,
       projectPath: session.projectPath,
@@ -126,7 +123,7 @@ app.whenReady().then(() => {
       pendingPlans.delete(payload.sessionId);
     }
 
-    return { ...result, logs, status: result.applied ? "applied" : "blocked" };
+    return { ...result, streamId, logs, status: result.applied ? "applied" : "blocked" };
   });
 
   ipcMain.handle("debate:discard", async (_evt, payload) => {

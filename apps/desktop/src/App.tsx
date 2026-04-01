@@ -35,6 +35,15 @@ const defaultSettings: AppSettings = {
   }
 };
 
+function deriveStatusFromEvent(type: string, phase?: string): string | null {
+  if (type === "error_event") return "error";
+  if (phase === "validation") return "validating";
+  if (phase === "repair") return "repairing";
+  if (phase === "verdict") return "planning_verdict";
+  if (phase === "proposal" || phase === "critique" || phase === "revision") return "planning";
+  return null;
+}
+
 export function App() {
   const [projectPath, setProjectPath] = useState("");
   const [task, setTask] = useState("Implement provider settings and validation.");
@@ -43,6 +52,8 @@ export function App() {
   const [validationReport, setValidationReport] = useState("");
   const [diff, setDiff] = useState("");
   const [proposedDiff, setProposedDiff] = useState("");
+  const [predictedChangedFiles, setPredictedChangedFiles] = useState<string[]>([]);
+  const [implementationChecklist, setImplementationChecklist] = useState<string[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [status, setStatus] = useState("idle");
   const [sessionId, setSessionId] = useState("");
@@ -51,6 +62,13 @@ export function App() {
 
   useEffect(() => {
     window.innoCode.getSettings().then((saved) => setSettings(saved));
+    const unsubscribe = window.innoCode.onRuntimeEvent((payload) => {
+      const line = `[${payload.event.type}] ${payload.event.message}`;
+      setLogs((prev) => [...prev, line]);
+      const nextStatus = deriveStatusFromEvent(payload.event.type, payload.event.phase);
+      if (nextStatus) setStatus(nextStatus);
+    });
+    return () => unsubscribe();
   }, []);
 
   const grouped = useMemo(() => {
@@ -76,12 +94,15 @@ export function App() {
     setStatus("planning");
     setValidationReport("");
     setDiff("");
+    setLogs([]);
     try {
       const result = await window.innoCode.runPlan({ task, projectPath });
-      setLogs(result.logs);
+      setLogs((prev) => [...prev, ...result.logs]);
       setMessages(result.messages);
       setFinalPlan(result.finalPlan);
       setProposedDiff(result.proposedDiff);
+      setPredictedChangedFiles(result.predictedChangedFiles);
+      setImplementationChecklist(result.implementationChecklist);
       setSessionId(result.sessionId);
       setStatus(result.status);
     } catch (error) {
@@ -119,6 +140,8 @@ export function App() {
     setStatus("discarded");
     setFinalPlan("");
     setProposedDiff("");
+    setPredictedChangedFiles([]);
+    setImplementationChecklist([]);
     setMessages([]);
   }
 
@@ -145,6 +168,8 @@ export function App() {
           validationReport={validationReport}
           diff={diff}
           proposedDiff={proposedDiff}
+          predictedChangedFiles={predictedChangedFiles}
+          implementationChecklist={implementationChecklist}
           approvalRequired={settings.approvalRequiredForApply}
           canApply={Boolean(sessionId) && !isRunning}
           onApply={handleApply}
