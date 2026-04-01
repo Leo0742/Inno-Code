@@ -9,10 +9,10 @@ import { DebateManager, type RuntimeClient, type RuntimeEvent } from "../src/ind
 const execFileAsync = promisify(execFile);
 
 class FakeRuntime implements RuntimeClient {
-  calls: Array<{ model: string; prompt: string; permissionMode?: string }> = [];
+  calls: Array<{ model: string; prompt: string; permissionMode?: string; envOverrides?: Record<string, string> }> = [];
 
-  async runTurn(input: { projectPath: string; model: string; prompt: string; permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan"; onEvent?: (event: RuntimeEvent) => void; signal?: AbortSignal }) {
-    this.calls.push({ model: input.model, prompt: input.prompt, permissionMode: input.permissionMode });
+  async runTurn(input: { projectPath: string; model: string; prompt: string; permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan"; onEvent?: (event: RuntimeEvent) => void; signal?: AbortSignal; envOverrides?: Record<string, string> }) {
+    this.calls.push({ model: input.model, prompt: input.prompt, permissionMode: input.permissionMode, envOverrides: input.envOverrides });
     return {
       output: input.prompt.includes("Generate a proposed unified diff")
         ? "diff --git a/a.ts b/a.ts\n+++ b/a.ts\n@@ -0,0 +1 @@"
@@ -25,7 +25,7 @@ class FakeRuntime implements RuntimeClient {
 }
 
 class FileWritingRuntime implements RuntimeClient {
-  async runTurn(input: { projectPath: string; model: string; prompt: string; permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan"; onEvent?: (event: RuntimeEvent) => void; signal?: AbortSignal }) {
+  async runTurn(input: { projectPath: string; model: string; prompt: string; permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan"; onEvent?: (event: RuntimeEvent) => void; signal?: AbortSignal; envOverrides?: Record<string, string> }) {
     if (input.permissionMode === "acceptEdits") {
       await fs.writeFile(path.join(input.projectPath, "a.txt"), "updated-a\n", "utf8");
       await fs.writeFile(path.join(input.projectPath, "b.txt"), "updated-b\n", "utf8");
@@ -58,6 +58,29 @@ describe("DebateManager", () => {
     expect(result.predictedChangedFiles).toContain("a.ts");
     expect(result.implementationChecklist).toContain("- step one");
     expect(rt.calls.every((call) => call.permissionMode === "plan")).toBe(true);
+  });
+
+
+  it("passes provider env overrides to runtime by role", async () => {
+    const rt = new FakeRuntime();
+    const manager = new DebateManager(rt);
+
+    await manager.runPlanning({
+      task: "Add feature",
+      projectPath: process.cwd(),
+      config: {
+        ...config,
+        roleProviderMap: {
+          architect: { envOverrides: { OPENAI_API_KEY: "arch-key" } },
+          critic: { envOverrides: { OPENAI_API_KEY: "critic-key" } },
+          implementer: { envOverrides: { OPENAI_API_KEY: "impl-key" } },
+          judge: { envOverrides: { OPENAI_API_KEY: "judge-key" } }
+        }
+      }
+    });
+
+    expect(rt.calls.some((call) => call.model === "a" && call.envOverrides?.OPENAI_API_KEY === "arch-key")).toBe(true);
+    expect(rt.calls.some((call) => call.model === "d" && call.envOverrides?.OPENAI_API_KEY === "judge-key")).toBe(true);
   });
 
   it("blocks apply when approval is required but not granted", async () => {

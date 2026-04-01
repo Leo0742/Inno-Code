@@ -1,6 +1,42 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 
+const roleOrder = ["architect", "critic", "implementer", "judge", "verifier"];
+
+function createDefaultProviderProfile() {
+  return {
+    id: "default-openai",
+    displayName: "Default OpenAI Compatible",
+    providerType: "openai_compatible",
+    endpoint: "https://api.openai.com/v1",
+    credentialRef: "provider:default-openai",
+    organization: "",
+    project: "",
+    extraHeaders: {},
+    modelPresets: {
+      architect: "gpt-4.1",
+      critic: "gpt-4.1-mini",
+      implementer: "gpt-4.1",
+      judge: "gpt-4.1",
+      verifier: "gpt-4.1-mini"
+    },
+    enabled: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function mapLegacyRoleModelMap(legacyRoleModelMap = {}) {
+  const roleModelSelections = {};
+  for (const role of roleOrder) {
+    roleModelSelections[role] = {
+      profileId: "default-openai",
+      model: legacyRoleModelMap[role] ?? createDefaultProviderProfile().modelPresets[role]
+    };
+  }
+  return roleModelSelections;
+}
+
 export const defaultSettings = {
   rounds: 3,
   repairAttempts: 1,
@@ -12,21 +48,69 @@ export const defaultSettings = {
     implementer: "gpt-4.1",
     judge: "gpt-4.1",
     verifier: "gpt-4.1-mini"
-  }
+  },
+  providerProfiles: [createDefaultProviderProfile()],
+  roleModelSelections: mapLegacyRoleModelMap()
 };
 
+function normalizeProviderProfile(profile, nowIso) {
+  if (!profile || typeof profile !== "object") return null;
+  const id = typeof profile.id === "string" && profile.id.trim() ? profile.id.trim() : null;
+  if (!id) return null;
+  const providerType = typeof profile.providerType === "string" ? profile.providerType : "openai_compatible";
+  return {
+    id,
+    displayName: typeof profile.displayName === "string" && profile.displayName.trim() ? profile.displayName.trim() : id,
+    providerType,
+    endpoint: typeof profile.endpoint === "string" ? profile.endpoint.trim() : "",
+    credentialRef: typeof profile.credentialRef === "string" && profile.credentialRef.trim() ? profile.credentialRef.trim() : `provider:${id}`,
+    organization: typeof profile.organization === "string" ? profile.organization : "",
+    project: typeof profile.project === "string" ? profile.project : "",
+    extraHeaders: profile.extraHeaders && typeof profile.extraHeaders === "object" ? profile.extraHeaders : {},
+    modelPresets: profile.modelPresets && typeof profile.modelPresets === "object" ? profile.modelPresets : {},
+    enabled: profile.enabled !== false,
+    createdAt: typeof profile.createdAt === "string" ? profile.createdAt : nowIso,
+    updatedAt: typeof profile.updatedAt === "string" ? profile.updatedAt : nowIso
+  };
+}
+
 export function mergeSettings(nextSettings = {}) {
+  const nowIso = new Date().toISOString();
   const roleModelMap = {
     ...defaultSettings.roleModelMap,
     ...(nextSettings.roleModelMap || {})
   };
+
+  const normalizedProfiles = Array.isArray(nextSettings.providerProfiles)
+    ? nextSettings.providerProfiles.map((profile) => normalizeProviderProfile(profile, nowIso)).filter(Boolean)
+    : [];
+
+  const providerProfiles = normalizedProfiles.length
+    ? normalizedProfiles
+    : [{ ...createDefaultProviderProfile(), modelPresets: roleModelMap, updatedAt: nowIso }];
+
+  const enabledProfiles = providerProfiles.filter((profile) => profile.enabled);
+  const fallbackProfileId = (enabledProfiles[0] ?? providerProfiles[0]).id;
+
+  const roleModelSelections = {};
+  for (const role of roleOrder) {
+    const candidate = nextSettings.roleModelSelections?.[role];
+    const legacyModel = roleModelMap[role] || defaultSettings.roleModelMap[role];
+    const profileExists = candidate?.profileId && providerProfiles.some((profile) => profile.id === candidate.profileId);
+    roleModelSelections[role] = {
+      profileId: profileExists ? candidate.profileId : fallbackProfileId,
+      model: typeof candidate?.model === "string" && candidate.model.trim() ? candidate.model.trim() : legacyModel
+    };
+  }
+
   return {
     ...defaultSettings,
     ...nextSettings,
-    roleModelMap
+    roleModelMap,
+    providerProfiles,
+    roleModelSelections
   };
 }
-
 
 export function isRuntimeEventForActiveStream(activeStreamId, incomingStreamId) {
   return Boolean(activeStreamId) && activeStreamId === incomingStreamId;

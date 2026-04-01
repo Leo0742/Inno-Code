@@ -60,6 +60,7 @@ export class OpenClaudeCliRuntime implements RuntimeClient {
     permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
     onEvent?: (event: RuntimeEvent) => void;
     signal?: AbortSignal;
+    envOverrides?: Record<string, string>;
   }): Promise<RuntimeTurnResult> {
     const args = [
       "-y",
@@ -78,7 +79,7 @@ export class OpenClaudeCliRuntime implements RuntimeClient {
     ];
 
     return new Promise((resolve, reject) => {
-      const child = spawn("npx", args, { cwd: input.projectPath, env: process.env });
+      const child = spawn("npx", args, { cwd: input.projectPath, env: { ...process.env, ...(input.envOverrides ?? {}) } });
       let buffer = "";
       const rawEvents: string[] = [];
       const events: RuntimeEvent[] = [];

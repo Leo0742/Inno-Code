@@ -32,6 +32,8 @@ test("mergeSettings keeps default roleModelMap entries while applying overrides"
   assert.equal(merged.rounds, 5);
   assert.equal(merged.roleModelMap.architect, "gpt-5");
   assert.equal(merged.roleModelMap.verifier, "gpt-4.1-mini");
+  assert.equal(Array.isArray(merged.providerProfiles), true);
+  assert.equal(merged.roleModelSelections.architect.profileId, "default-openai");
 });
 
 test("stream event filtering only accepts active stream events", () => {
@@ -118,4 +120,18 @@ test("pending plan store drops malformed persisted entries during restore", asyn
   assert.equal(restored.length, 1);
   assert.equal(restored[0].sessionId, "ok");
   assert.equal(store.size(), 1);
+});
+
+
+test("mergeSettings migrates legacy roleModelMap to roleModelSelections", () => {
+  const migrated = mergeSettings({
+    roleModelMap: {
+      architect: "legacy-arch",
+      verifier: "legacy-verifier"
+    }
+  });
+
+  assert.equal(migrated.roleModelSelections.architect.model, "legacy-arch");
+  assert.equal(migrated.roleModelSelections.verifier.model, "legacy-verifier");
+  assert.equal(migrated.providerProfiles[0].id, "default-openai");
 });

@@ -1,13 +1,37 @@
+interface ProviderProfile {
+  id: string;
+  displayName: string;
+  providerType: "openai_compatible" | "anthropic_compatible" | "custom_openai" | "local_runtime";
+  endpoint: string;
+  credentialRef: string;
+  organization: string;
+  project: string;
+  extraHeaders: Record<string, string>;
+  modelPresets: Record<string, string>;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface RoleModelSelection {
+  profileId: string;
+  model: string;
+}
+
 interface RuntimeEventPayload {
   streamId: string;
   ts: number;
-  event: {
-    type: string;
-    message: string;
-    raw: string;
-    phase?: string;
-    role?: string;
-  };
+  event: { type: string; message: string; raw: string; phase?: string; role?: string };
+}
+
+interface AppSettingsShape {
+  rounds: number;
+  repairAttempts: number;
+  approvalRequiredForApply: boolean;
+  validationCommands: string[];
+  roleModelMap: Record<string, string>;
+  providerProfiles: ProviderProfile[];
+  roleModelSelections: Record<string, RoleModelSelection>;
 }
 
 interface PendingPlanSession {
@@ -15,28 +39,22 @@ interface PendingPlanSession {
   task: string;
   projectPath: string;
   finalPlan: string;
-  settings: {
-    rounds: number;
-    repairAttempts: number;
-    approvalRequiredForApply: boolean;
-    validationCommands: string[];
-    roleModelMap: Record<string, string>;
-  };
+  settings: AppSettingsShape;
   proposedDiff?: string;
   predictedChangedFiles?: string[];
   implementationChecklist?: string[];
-    exactPreview?: {
-      exactPreviewAvailable: boolean;
-      previewMode: "exact" | "predicted";
-      reason?: string;
-      sandboxPath?: string;
-      sandboxKind?: "worktree" | "copy";
-      changedFiles: string[];
-      diff: string;
-      validationReport: string;
-      unsupportedFiles?: Array<{ filePath: string; reason: string }>;
-      createdAt?: string;
-    } | null;
+  exactPreview?: {
+    exactPreviewAvailable: boolean;
+    previewMode: "exact" | "predicted";
+    reason?: string;
+    sandboxPath?: string;
+    sandboxKind?: "worktree" | "copy";
+    changedFiles: string[];
+    diff: string;
+    validationReport: string;
+    unsupportedFiles?: Array<{ filePath: string; reason: string }>;
+    createdAt?: string;
+  } | null;
   createdAt?: string;
 }
 
@@ -44,78 +62,17 @@ interface Window {
   innoCode: {
     version: string;
     pickProject: () => Promise<string>;
-    getSettings: () => Promise<{
-      rounds: number;
-      repairAttempts: number;
-      approvalRequiredForApply: boolean;
-      validationCommands: string[];
-      roleModelMap: Record<string, string>;
-    }>;
-    saveSettings: (settings: {
-      rounds: number;
-      repairAttempts: number;
-      approvalRequiredForApply: boolean;
-      validationCommands: string[];
-      roleModelMap: Record<string, string>;
-    }) => Promise<{
-      rounds: number;
-      repairAttempts: number;
-      approvalRequiredForApply: boolean;
-      validationCommands: string[];
-      roleModelMap: Record<string, string>;
-    }>;
+    getSettings: () => Promise<AppSettingsShape>;
+    saveSettings: (settings: AppSettingsShape) => Promise<AppSettingsShape>;
+    setCredential: (payload: { credentialRef: string; secret: string }) => Promise<{ ok: boolean }>;
+    deleteCredential: (payload: { credentialRef: string }) => Promise<void>;
+    getCredentialStatus: (payload: { credentialRef: string }) => Promise<{ hasCredential: boolean }>;
+    testProvider: (payload: { settings: AppSettingsShape; role?: string }) => Promise<{ ok: boolean; category: string; message: string }>;
     getPendingPlans: () => Promise<PendingPlanSession[]>;
-    getRuntimeDiagnostics: () => Promise<{
-      openClaudeCliAvailable: boolean;
-      openClaudeVersion: string;
-      providerConfigurationOwner: "openclaude_runtime";
-      startupIssues?: string[];
-      guidance: string[];
-      lastRuntimeFailure: null | { at: string; kind?: string; message: string };
-    }>;
-    runPlan: (payload: { task: string; projectPath: string; streamId: string }) => Promise<{
-      streamId: string;
-      sessionId: string;
-      messages: Array<{ role: string; phase: string; round: number; model: string; content: string }>;
-      finalPlan: string;
-      proposedDiff: string;
-      predictedChangedFiles: string[];
-      implementationChecklist: string[];
-      approvalRequired: boolean;
-      status: string;
-    }>;
-    generateExactPreview: (payload: { sessionId: string; streamId: string }) => Promise<{
-      streamId: string;
-      exactPreviewAvailable: boolean;
-      previewMode: "exact" | "predicted";
-      reason?: string;
-      sandboxPath?: string;
-      sandboxKind?: "worktree" | "copy";
-      changedFiles: string[];
-      diff: string;
-      validationReport: string;
-      validationResults: Array<{ command: string; exitCode: number; output: string }>;
-      unsupportedFiles?: Array<{ filePath: string; reason: string }>;
-    }>;
-    applyPlan: (payload: {
-      sessionId: string;
-      approved: boolean;
-      streamId: string;
-      applyMode?: "runtime_full" | "exact_all" | "exact_selected_files" | "exact_selected_hunks";
-      selectedFiles?: string[];
-      selectedHunks?: Array<{ filePath: string; hunkIndex: number }>;
-    }) => Promise<{
-      streamId: string;
-      messages: Array<{ role: string; phase: string; round: number; model: string; content: string }>;
-      validationReport: string;
-      validationResults: Array<{ command: string; exitCode: number; output: string }>;
-      diff: string;
-      changedFiles: string[];
-      applyMode: "runtime_full" | "exact_all" | "exact_selected_files" | "exact_selected_hunks";
-      applied: boolean;
-      status: string;
-      blockedReasons?: string[];
-    }>;
+    getRuntimeDiagnostics: () => Promise<any>;
+    runPlan: (payload: { task: string; projectPath: string; streamId: string }) => Promise<any>;
+    generateExactPreview: (payload: { sessionId: string; streamId: string }) => Promise<any>;
+    applyPlan: (payload: any) => Promise<any>;
     cancelRun: (payload: { streamId: string }) => Promise<{ ok: boolean; message: string }>;
     discardPlan: (payload: { sessionId: string }) => Promise<{ ok: true }>;
     onRuntimeEvent: (handler: (payload: RuntimeEventPayload) => void) => () => void;
