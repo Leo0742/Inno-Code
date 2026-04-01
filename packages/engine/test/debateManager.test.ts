@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { DebateManager, type RuntimeClient, type RuntimeEvent } from "../src/index.js";
+
+const execFileAsync = promisify(execFile);
 
 class FakeRuntime implements RuntimeClient {
   calls: Array<{ model: string; prompt: string; permissionMode?: string }> = [];
@@ -14,6 +21,16 @@ class FakeRuntime implements RuntimeClient {
       events: [{ type: "agent_finished", message: "done", raw: "{}" } as RuntimeEvent],
       exitCode: 0
     };
+  }
+}
+
+class FileWritingRuntime implements RuntimeClient {
+  async runTurn(input: { projectPath: string; model: string; prompt: string; permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan"; onEvent?: (event: RuntimeEvent) => void; signal?: AbortSignal }) {
+    if (input.permissionMode === "acceptEdits") {
+      await fs.writeFile(path.join(input.projectPath, "a.txt"), "updated-a\n", "utf8");
+      await fs.writeFile(path.join(input.projectPath, "b.txt"), "updated-b\n", "utf8");
+    }
+    return { output: "ok", rawEvents: [], events: [], exitCode: 0 };
   }
 }
 
@@ -56,6 +73,7 @@ describe("DebateManager", () => {
     });
 
     expect(result.applied).toBe(false);
+    expect(result.applyMode).toBe("runtime_full");
     expect(rt.calls.length).toBe(0);
   });
 
@@ -72,7 +90,7 @@ describe("DebateManager", () => {
     });
 
     expect(rt.calls.some((call) => call.model === "e" && call.permissionMode === "plan")).toBe(true);
-  });
+  }, 20000);
 
   it("emits phase and validation events during apply flow", async () => {
     const rt = new FakeRuntime();
@@ -91,5 +109,85 @@ describe("DebateManager", () => {
     expect(events.some((event) => event.type === "phase_event" && event.phase === "revision")).toBe(true);
     expect(events.some((event) => event.type === "command_event")).toBe(true);
     expect(events.some((event) => event.type === "validation_event")).toBe(true);
+  }, 20000);
+
+  it("generates exact preview in sandbox and cleans up", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "inno-test-"));
+    await execFileAsync("git", ["init"], { cwd: tempDir });
+    await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
+    await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: tempDir });
+    await fs.writeFile(path.join(tempDir, "a.txt"), "original-a\n", "utf8");
+    await fs.writeFile(path.join(tempDir, "b.txt"), "original-b\n", "utf8");
+    await execFileAsync("git", ["add", "."], { cwd: tempDir });
+    await execFileAsync("git", ["commit", "-m", "init"], { cwd: tempDir });
+
+    const manager = new DebateManager(new FileWritingRuntime());
+    const preview = await manager.generateExactPreview({
+      task: "update files",
+      finalPlan: "plan",
+      projectPath: tempDir,
+      config: { ...config, validationCommands: ["echo ok"] }
+    });
+    expect(preview.exactPreviewAvailable).toBe(true);
+    expect(preview.previewMode).toBe("exact");
+    expect(preview.changedFiles).toEqual(["a.txt", "b.txt"]);
+
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], { cwd: tempDir });
+    expect(stdout.trim()).toBe("");
+    await manager.cleanupExactPreview(tempDir, preview.sandboxPath!);
+  }, 20000);
+
+  it("falls back when working tree is dirty", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "inno-test-dirty-"));
+    await execFileAsync("git", ["init"], { cwd: tempDir });
+    await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
+    await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: tempDir });
+    await fs.writeFile(path.join(tempDir, "a.txt"), "original\n", "utf8");
+    await execFileAsync("git", ["add", "."], { cwd: tempDir });
+    await execFileAsync("git", ["commit", "-m", "init"], { cwd: tempDir });
+    await fs.writeFile(path.join(tempDir, "a.txt"), "dirty\n", "utf8");
+
+    const manager = new DebateManager(new FileWritingRuntime());
+    const preview = await manager.generateExactPreview({
+      task: "update files",
+      finalPlan: "plan",
+      projectPath: tempDir,
+      config
+    });
+    expect(preview.exactPreviewAvailable).toBe(false);
+    expect(preview.previewMode).toBe("predicted");
+    expect(preview.reason).toContain("working tree has uncommitted changes");
   });
+
+  it("applies only selected files from exact preview artifact", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "inno-test-apply-"));
+    await execFileAsync("git", ["init"], { cwd: tempDir });
+    await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
+    await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: tempDir });
+    await fs.writeFile(path.join(tempDir, "a.txt"), "original-a\n", "utf8");
+    await fs.writeFile(path.join(tempDir, "b.txt"), "original-b\n", "utf8");
+    await execFileAsync("git", ["add", "."], { cwd: tempDir });
+    await execFileAsync("git", ["commit", "-m", "init"], { cwd: tempDir });
+
+    const manager = new DebateManager(new FileWritingRuntime());
+    const preview = await manager.generateExactPreview({
+      task: "update files",
+      finalPlan: "plan",
+      projectPath: tempDir,
+      config: { ...config, validationCommands: ["echo ok"] }
+    });
+    const applyResult = await manager.applyFromExactPreviewArtifact({
+      projectPath: tempDir,
+      sandboxPath: preview.sandboxPath!,
+      selectedFiles: ["a.txt"],
+      config: { ...config, validationCommands: ["echo ok"] }
+    });
+
+    expect(applyResult.applied).toBe(true);
+    expect(applyResult.applyMode).toBe("exact_selected");
+    expect(applyResult.changedFiles).toEqual(["a.txt"]);
+    expect(await fs.readFile(path.join(tempDir, "a.txt"), "utf8")).toContain("updated-a");
+    expect(await fs.readFile(path.join(tempDir, "b.txt"), "utf8")).toContain("original-b");
+    await manager.cleanupExactPreview(tempDir, preview.sandboxPath!);
+  }, 20000);
 });

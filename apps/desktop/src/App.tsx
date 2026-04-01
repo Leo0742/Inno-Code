@@ -70,6 +70,19 @@ export function App() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [activeStreamId, setActiveStreamId] = useState("");
   const [pendingSessions, setPendingSessions] = useState<PendingPlanSession[]>([]);
+  const [runtimeDiagnostics, setRuntimeDiagnostics] = useState<{
+    openClaudeCliAvailable: boolean;
+    openClaudeVersion: string;
+    providerConfigurationOwner: string;
+    guidance: string[];
+    lastRuntimeFailure: null | { at: string; message: string };
+  } | null>(null);
+  const [previewMode, setPreviewMode] = useState<"predicted" | "exact">("predicted");
+  const [exactPreviewReason, setExactPreviewReason] = useState("");
+  const [exactPreviewDiff, setExactPreviewDiff] = useState("");
+  const [exactPreviewFiles, setExactPreviewFiles] = useState<string[]>([]);
+  const [exactPreviewValidationReport, setExactPreviewValidationReport] = useState("");
+  const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
 
   async function refreshPendingSessions() {
     const sessions = await window.innoCode.getPendingPlans();
@@ -79,6 +92,7 @@ export function App() {
   useEffect(() => {
     window.innoCode.getSettings().then((saved) => setSettings(saved));
     refreshPendingSessions();
+    window.innoCode.getRuntimeDiagnostics().then((diagnostics) => setRuntimeDiagnostics(diagnostics));
 
     const unsubscribe = window.innoCode.onRuntimeEvent((payload) => {
       if (!isRuntimeEventForActiveStream(activeStreamId, payload.streamId)) return;
@@ -111,6 +125,22 @@ export function App() {
     setValidationReport("");
     setDiff("");
     setStatus("pending_review");
+    const exactPreview = selected.exactPreview;
+    if (exactPreview?.exactPreviewAvailable) {
+      setPreviewMode("exact");
+      setExactPreviewReason("");
+      setExactPreviewDiff(exactPreview.diff);
+      setExactPreviewFiles(exactPreview.changedFiles ?? []);
+      setExactPreviewValidationReport(exactPreview.validationReport ?? "");
+      setSelectedFiles(exactPreview.changedFiles ?? []);
+    } else {
+      setPreviewMode("predicted");
+      setExactPreviewReason(exactPreview?.reason ?? "");
+      setExactPreviewDiff("");
+      setExactPreviewFiles([]);
+      setExactPreviewValidationReport("");
+      setSelectedFiles([]);
+    }
     setLogs((prev) => [...prev, `Loaded pending review session ${selected.sessionId}.`]);
   }
 
@@ -131,6 +161,12 @@ export function App() {
     setStatus("planning");
     setValidationReport("");
     setDiff("");
+    setPreviewMode("predicted");
+    setExactPreviewReason("");
+    setExactPreviewDiff("");
+    setExactPreviewFiles([]);
+    setExactPreviewValidationReport("");
+    setSelectedFiles([]);
     setLogs([]);
     try {
       const result = await window.innoCode.runPlan({ task, projectPath, streamId });
@@ -159,12 +195,23 @@ export function App() {
 
   async function handleApply() {
     if (!sessionId || isRunning) return;
+    await runApply("runtime_full");
+  }
+
+  async function runApply(applyMode: "runtime_full" | "exact_all" | "exact_selected") {
+    if (!sessionId || isRunning) return;
     const streamId = createClientStreamId("apply");
     setActiveStreamId(streamId);
     setIsRunning(true);
     setStatus("applying");
     try {
-      const result = await window.innoCode.applyPlan({ sessionId, approved: true, streamId });
+      const result = await window.innoCode.applyPlan({
+        sessionId,
+        approved: true,
+        streamId,
+        applyMode,
+        selectedFiles: applyMode === "exact_selected" ? selectedFiles : undefined
+      });
       setMessages((prev) => [...prev, ...result.messages]);
       setValidationReport(result.validationReport);
       setDiff(result.diff);
@@ -180,6 +227,41 @@ export function App() {
         setStatus("error");
         setLogs((prev) => [...prev, `Apply failed: ${message}`]);
       }
+    } finally {
+      setIsRunning(false);
+      setActiveStreamId("");
+    }
+  }
+
+  async function handleGenerateExactPreview() {
+    if (!sessionId || isRunning) return;
+    const streamId = createClientStreamId("plan");
+    setActiveStreamId(streamId);
+    setIsRunning(true);
+    setStatus("generating_exact_preview");
+    try {
+      const result = await window.innoCode.generateExactPreview({ sessionId, streamId });
+      if (result.exactPreviewAvailable) {
+        setPreviewMode("exact");
+        setExactPreviewReason("");
+        setExactPreviewDiff(result.diff);
+        setExactPreviewFiles(result.changedFiles);
+        setExactPreviewValidationReport(result.validationReport);
+        setSelectedFiles(result.changedFiles);
+        setStatus("exact_preview_ready");
+      } else {
+        setPreviewMode("predicted");
+        setExactPreviewReason(result.reason ?? "Exact preview unavailable.");
+        setExactPreviewDiff("");
+        setExactPreviewFiles([]);
+        setExactPreviewValidationReport("");
+        setSelectedFiles([]);
+        setStatus("exact_preview_unavailable");
+      }
+      await refreshPendingSessions();
+    } catch (error) {
+      setStatus("error");
+      setLogs((prev) => [...prev, `Exact preview failed: ${String(error)}`]);
     } finally {
       setIsRunning(false);
       setActiveStreamId("");
@@ -206,6 +288,12 @@ export function App() {
     setPredictedChangedFiles([]);
     setImplementationChecklist([]);
     setMessages([]);
+    setPreviewMode("predicted");
+    setExactPreviewReason("");
+    setExactPreviewDiff("");
+    setExactPreviewFiles([]);
+    setExactPreviewValidationReport("");
+    setSelectedFiles([]);
     await refreshPendingSessions();
   }
 
@@ -224,13 +312,24 @@ export function App() {
     setLogs((prev) => [...prev, "Settings saved."]);
   }
 
+  async function refreshRuntimeDiagnostics() {
+    const diagnostics = await window.innoCode.getRuntimeDiagnostics();
+    setRuntimeDiagnostics(diagnostics);
+  }
+
   return (
     <div className="layout">
       <aside className="sidebar">
         <h2>Inno Code</h2>
         <button onClick={chooseProject}>Open Project Folder</button>
         <p>{projectPath || "No project selected."}</p>
-        <SettingsPanel settings={settings} onChange={setSettings} onSave={handleSaveSettings} />
+        <SettingsPanel
+          settings={settings}
+          onChange={setSettings}
+          onSave={handleSaveSettings}
+          runtimeDiagnostics={runtimeDiagnostics}
+          onRefreshDiagnostics={refreshRuntimeDiagnostics}
+        />
       </aside>
       <main className="main">
         <TaskComposer task={task} onTaskChange={setTask} onRun={handleRun} onCancel={handleCancelRun} isRunning={isRunning} />
@@ -251,7 +350,17 @@ export function App() {
           implementationChecklist={implementationChecklist}
           approvalRequired={settings.approvalRequiredForApply}
           canApply={Boolean(sessionId) && !isRunning}
+          previewMode={previewMode}
+          exactPreviewReason={exactPreviewReason}
+          exactPreviewDiff={exactPreviewDiff}
+          exactPreviewFiles={exactPreviewFiles}
+          exactPreviewValidationReport={exactPreviewValidationReport}
+          selectedFiles={selectedFiles}
+          onSelectedFilesChange={setSelectedFiles}
+          onGenerateExactPreview={handleGenerateExactPreview}
           onApply={handleApply}
+          onApplyAllExact={() => runApply("exact_all")}
+          onApplySelectedExact={() => runApply("exact_selected")}
           onDiscard={handleDiscard}
         />
       </main>

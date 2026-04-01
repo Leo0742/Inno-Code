@@ -20,15 +20,34 @@ Inno Code is a desktop coding assistant (Electron + React) that runs multi-agent
   - final plan,
   - pre-apply predicted artifacts,
   - post-apply source-of-truth outputs.
-- Pre-apply preview is explicitly labeled **prediction only** and structured as:
+- Pre-apply preview now supports two explicit modes:
+  - **Predicted preview** (model-only, pre-execution estimate)
+  - **Exact sandbox preview** (real diff generated in disposable git worktree)
+- Exact sandbox preview:
+  - requires a clean working tree,
+  - runs approved plan in disposable worktree,
+  - captures exact changed files + exact diff + optional validation output,
+  - never mutates the real repository during preview generation,
+  - is cleaned up when discarded/applied.
+- If exact preview is unavailable (dirty repo/non-git/runtime failure), UI and logs clearly label fallback to predicted mode.
+- Predicted preview is still structured as:
   - implementation checklist,
   - predicted changed files,
   - predicted patch text.
-- Applied git diff can be reviewed by changed file instead of one giant raw block.
+- Apply modes now include:
+  - legacy full apply (runtime directly in repo),
+  - apply all files from exact preview artifact,
+  - apply selected files from exact preview artifact.
+- Selective apply is intentionally file-level only (no hunk-level apply yet).
+- Applied git diff can be reviewed by changed file as post-apply source of truth.
 
 ### Runtime/provider settings clarity
 - In-app settings manage planner/apply flow settings only.
 - Provider selection, API keys, and account/runtime auth are explicitly documented as managed by openclaude runtime outside Inno Code.
+- Added lightweight runtime diagnostics in settings:
+  - openclaude CLI availability/version probe,
+  - last runtime invocation failure summary,
+  - troubleshooting guidance and responsibility split.
 
 ## Intentionally deferred in this phase
 - Partial/hunk apply (still full apply/discard only).

@@ -10,7 +10,17 @@ interface Props {
   implementationChecklist: string[];
   approvalRequired: boolean;
   canApply: boolean;
+  previewMode: "predicted" | "exact";
+  exactPreviewReason: string;
+  exactPreviewDiff: string;
+  exactPreviewFiles: string[];
+  exactPreviewValidationReport: string;
+  selectedFiles: string[];
+  onSelectedFilesChange: (files: string[]) => void;
+  onGenerateExactPreview: () => void;
   onApply: () => void;
+  onApplyAllExact: () => void;
+  onApplySelectedExact: () => void;
   onDiscard: () => void;
 }
 
@@ -54,12 +64,34 @@ export function ReviewPanel({
   implementationChecklist,
   approvalRequired,
   canApply,
+  previewMode,
+  exactPreviewReason,
+  exactPreviewDiff,
+  exactPreviewFiles,
+  exactPreviewValidationReport,
+  selectedFiles,
+  onSelectedFilesChange,
+  onGenerateExactPreview,
   onApply,
+  onApplyAllExact,
+  onApplySelectedExact,
   onDiscard
 }: Props) {
   const parsedDiff = useMemo(() => parseDiffByFile(diff), [diff]);
   const [selectedDiffFile, setSelectedDiffFile] = useState("");
   const selectedPatch = parsedDiff.find((entry) => entry.filePath === selectedDiffFile)?.patch ?? parsedDiff[0]?.patch ?? "No applied diff yet.";
+  const exactPreviewByFile = useMemo(() => parseDiffByFile(exactPreviewDiff), [exactPreviewDiff]);
+  const [selectedExactPreviewFile, setSelectedExactPreviewFile] = useState("");
+  const selectedExactPatch =
+    exactPreviewByFile.find((entry) => entry.filePath === selectedExactPreviewFile)?.patch ?? exactPreviewByFile[0]?.patch ?? "No exact preview diff generated.";
+
+  const toggleFile = (filePath: string) => {
+    if (selectedFiles.includes(filePath)) {
+      onSelectedFilesChange(selectedFiles.filter((entry) => entry !== filePath));
+      return;
+    }
+    onSelectedFilesChange([...selectedFiles, filePath]);
+  };
 
   return (
     <section className="panel">
@@ -69,9 +101,15 @@ export function ReviewPanel({
         {approvalRequired ? " (approval required)" : ""}
       </p>
       <div className="actions">
-        <button disabled={!canApply} onClick={onApply}>Apply Approved Plan</button>
+        <button disabled={!canApply} onClick={onGenerateExactPreview}>Generate Exact Preview</button>
+        <button disabled={!canApply} onClick={onApply}>Apply Approved Plan (Legacy Full)</button>
+        <button disabled={!canApply || previewMode !== "exact"} onClick={onApplyAllExact}>Apply All</button>
+        <button disabled={!canApply || previewMode !== "exact" || selectedFiles.length === 0} onClick={onApplySelectedExact}>Apply Selected Files</button>
         <button disabled={!canApply} className="button-danger" onClick={onDiscard}>Discard Pending Plan</button>
       </div>
+      {previewMode !== "exact" ? (
+        <p className="helper">Selective apply is disabled until an exact sandbox preview is available. {exactPreviewReason}</p>
+      ) : null}
 
       <h4>Final Plan</h4>
       <pre>{finalPlan || "Plan will appear after debate."}</pre>
@@ -106,6 +144,54 @@ export function ReviewPanel({
       </div>
       <h5>Predicted Patch Text</h5>
       <pre>{proposedDiff || "No proposed diff yet."}</pre>
+
+      <h4>Exact Sandbox Preview</h4>
+      <p>
+        State:{" "}
+        <strong>{previewMode === "exact" ? "exact sandbox preview (trusted pre-apply diff)" : "predicted only (exact unavailable)"}</strong>
+      </p>
+      {previewMode !== "exact" ? <pre>{exactPreviewReason || "Generate exact preview to unlock selective apply."}</pre> : null}
+      {previewMode === "exact" ? (
+        <>
+          <h5>Exact Changed Files (Selectable)</h5>
+          <ul className="file-list">
+            {exactPreviewFiles.map((filePath) => (
+              <li key={filePath}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={selectedFiles.includes(filePath)}
+                    onChange={() => toggleFile(filePath)}
+                  />{" "}
+                  {filePath}
+                </label>
+              </li>
+            ))}
+          </ul>
+          <h5>Exact Sandbox Diff by File</h5>
+          <div className="review-grid">
+            <div>
+              <ul className="file-list">
+                {exactPreviewByFile.map((entry) => (
+                  <li key={entry.filePath}>
+                    <button
+                      className={selectedExactPreviewFile === entry.filePath ? "button-secondary" : ""}
+                      onClick={() => setSelectedExactPreviewFile(entry.filePath)}
+                    >
+                      {entry.filePath}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <pre>{selectedExactPatch}</pre>
+            </div>
+          </div>
+          <h5>Exact Preview Validation Output</h5>
+          <pre>{exactPreviewValidationReport || "No validation output for exact preview."}</pre>
+        </>
+      ) : null}
 
       <h4>Post-Apply Results (Source of Truth)</h4>
       <h5>Validation Output</h5>

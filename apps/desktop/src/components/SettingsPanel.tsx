@@ -10,11 +10,19 @@ interface Props {
   settings: Settings;
   onChange: (next: Settings) => void;
   onSave: () => void;
+  runtimeDiagnostics: {
+    openClaudeCliAvailable: boolean;
+    openClaudeVersion: string;
+    providerConfigurationOwner: string;
+    guidance: string[];
+    lastRuntimeFailure: null | { at: string; message: string };
+  } | null;
+  onRefreshDiagnostics: () => void;
 }
 
 const roleOrder = ["architect", "critic", "implementer", "judge", "verifier"] as const;
 
-export function SettingsPanel({ settings, onChange, onSave }: Props) {
+export function SettingsPanel({ settings, onChange, onSave, runtimeDiagnostics, onRefreshDiagnostics }: Props) {
   return (
     <section className="panel">
       <h3>Settings</h3>
@@ -59,6 +67,26 @@ export function SettingsPanel({ settings, onChange, onSave }: Props) {
       <button onClick={onSave}>Save Settings</button>
       <p className="helper">Managed in Inno Code: planning loops, model-per-role mapping, approval gate, validation commands.</p>
       <p className="helper">Managed in openclaude runtime: provider selection, API keys, account auth, remote runtime behavior.</p>
+      <h4>Runtime Diagnostics</h4>
+      <button onClick={onRefreshDiagnostics}>Refresh Diagnostics</button>
+      {runtimeDiagnostics ? (
+        <>
+          <p className="helper">openclaude CLI available: <strong>{runtimeDiagnostics.openClaudeCliAvailable ? "yes" : "no"}</strong></p>
+          <p className="helper">openclaude version/details: {runtimeDiagnostics.openClaudeVersion || "(unknown)"}</p>
+          {runtimeDiagnostics.lastRuntimeFailure ? (
+            <pre>Last runtime failure ({runtimeDiagnostics.lastRuntimeFailure.at}): {runtimeDiagnostics.lastRuntimeFailure.message}</pre>
+          ) : (
+            <p className="helper">No runtime failures captured in this app session.</p>
+          )}
+          <ul>
+            {runtimeDiagnostics.guidance.map((item) => (
+              <li key={item} className="helper">{item}</li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="helper">Diagnostics not loaded yet.</p>
+      )}
     </section>
   );
 }

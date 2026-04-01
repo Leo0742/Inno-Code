@@ -70,6 +70,17 @@ export interface PlanRunResult {
   approvalRequired: boolean;
 }
 
+export interface ExactPreviewResult {
+  exactPreviewAvailable: boolean;
+  previewMode: "exact" | "predicted";
+  reason?: string;
+  sandboxPath?: string;
+  changedFiles: string[];
+  diff: string;
+  validationReport: string;
+  validationResults: ValidationResult[];
+}
+
 export interface ValidationResult {
   command: string;
   exitCode: number;
@@ -82,4 +93,6 @@ export interface ApplyRunResult {
   validationResults: ValidationResult[];
   diff: string;
   applied: boolean;
+  applyMode: "runtime_full" | "exact_all" | "exact_selected";
+  changedFiles: string[];
 }

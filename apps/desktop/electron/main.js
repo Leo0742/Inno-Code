@@ -1,7 +1,9 @@
 import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { promisify } from "node:util";
 import { DebateManager, OpenClaudeCliRuntime, isAbortError } from "@inno/engine";
 import { createPendingPlanStore, defaultSettings, mergeSettings } from "./state.js";
 
@@ -10,8 +12,10 @@ const __dirname = path.dirname(__filename);
 
 const runtime = new OpenClaudeCliRuntime();
 const manager = new DebateManager(runtime);
+const execFileAsync = promisify(execFile);
 let pendingPlans;
 const activeRuns = new Map();
+let lastRuntimeFailure = null;
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -74,6 +78,32 @@ function clearActiveRun(streamId) {
   activeRuns.delete(streamId);
 }
 
+async function getRuntimeDiagnostics() {
+  let openClaudeCliAvailable = false;
+  let version = "";
+  try {
+    const { stdout } = await execFileAsync("npx", ["-y", "@gitlawb/openclaude", "--version"], {
+      maxBuffer: 5 * 1024 * 1024
+    });
+    openClaudeCliAvailable = true;
+    version = stdout.trim();
+  } catch (error) {
+    openClaudeCliAvailable = false;
+    version = `Unavailable: ${String(error)}`;
+  }
+  return {
+    openClaudeCliAvailable,
+    openClaudeVersion: version,
+    providerConfigurationOwner: "openclaude_runtime",
+    guidance: [
+      "Inno Code does not manage provider API keys/accounts.",
+      "Configure provider credentials and auth in openclaude runtime.",
+      "If runtime calls fail, verify openclaude CLI setup in your shell."
+    ],
+    lastRuntimeFailure
+  };
+}
+
 app.whenReady().then(async () => {
   pendingPlans = createPendingPlanStore({ filePath: getPendingPlansPath() });
   await pendingPlans.restore();
@@ -92,6 +122,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("pending:get", async () => {
     return pendingPlans.list();
   });
+  ipcMain.handle("runtime:diagnostics", async () => getRuntimeDiagnostics());
 
   ipcMain.handle("debate:plan", async (event, payload) => {
     const streamId = payload.streamId || `plan-${Date.now()}`;
@@ -116,6 +147,7 @@ app.whenReady().then(async () => {
         proposedDiff: plan.proposedDiff,
         predictedChangedFiles: plan.predictedChangedFiles,
         implementationChecklist: plan.implementationChecklist,
+        exactPreview: null,
         createdAt: new Date().toISOString()
       });
       return { ...plan, streamId, sessionId, status: "pending_review" };
@@ -128,6 +160,7 @@ app.whenReady().then(async () => {
         });
         throw new Error("Run cancelled");
       }
+      lastRuntimeFailure = { at: new Date().toISOString(), message: String(error) };
       throw error;
     } finally {
       clearActiveRun(streamId);
@@ -153,17 +186,46 @@ app.whenReady().then(async () => {
     const abortController = registerActiveRun(streamId, "apply");
 
     try {
-      const result = await manager.applyApprovedPlan({
-        task: session.task,
-        projectPath: session.projectPath,
-        config: session.settings,
-        finalPlan: session.finalPlan,
-        approved: Boolean(payload.approved),
-        onLog,
-        signal: abortController.signal
-      });
+      let result;
+      if (payload.applyMode === "exact_selected" || payload.applyMode === "exact_all") {
+        const exactPreview = session.exactPreview;
+        if (!exactPreview?.exactPreviewAvailable || !exactPreview.sandboxPath) {
+          return {
+            streamId,
+            validationReport: "Selective apply is blocked because exact sandbox preview is unavailable.",
+            validationResults: [],
+            diff: "No diff generated.",
+            changedFiles: [],
+            applyMode: payload.applyMode,
+            messages: [],
+            applied: false,
+            status: "blocked"
+          };
+        }
+        result = await manager.applyFromExactPreviewArtifact({
+          projectPath: session.projectPath,
+          sandboxPath: exactPreview.sandboxPath,
+          selectedFiles: payload.selectedFiles,
+          config: session.settings,
+          onLog,
+          signal: abortController.signal
+        });
+      } else {
+        result = await manager.applyApprovedPlan({
+          task: session.task,
+          projectPath: session.projectPath,
+          config: session.settings,
+          finalPlan: session.finalPlan,
+          approved: Boolean(payload.approved),
+          onLog,
+          signal: abortController.signal
+        });
+      }
 
       if (result.applied || payload.approved === false) {
+        if (session.exactPreview?.sandboxPath) {
+          await manager.cleanupExactPreview(session.projectPath, session.exactPreview.sandboxPath);
+        }
         await pendingPlans.delete(payload.sessionId);
       }
 
@@ -177,6 +239,7 @@ app.whenReady().then(async () => {
         });
         throw new Error("Run cancelled");
       }
+      lastRuntimeFailure = { at: new Date().toISOString(), message: String(error) };
       throw error;
     } finally {
       clearActiveRun(streamId);
@@ -192,8 +255,67 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("debate:discard", async (_evt, payload) => {
+    const session = pendingPlans.get(payload.sessionId);
+    if (session?.exactPreview?.sandboxPath) {
+      await manager.cleanupExactPreview(session.projectPath, session.exactPreview.sandboxPath);
+    }
     await pendingPlans.delete(payload.sessionId);
     return { ok: true };
+  });
+
+  ipcMain.handle("debate:preview:exact", async (event, payload) => {
+    const streamId = payload.streamId || `preview-${Date.now()}`;
+    const session = pendingPlans.get(payload.sessionId);
+    if (!session) {
+      return {
+        streamId,
+        exactPreviewAvailable: false,
+        previewMode: "predicted",
+        reason: "Missing pending session.",
+        changedFiles: [],
+        diff: "No exact preview diff generated.",
+        validationReport: "No validation output for exact preview.",
+        validationResults: []
+      };
+    }
+    if (session.exactPreview?.sandboxPath) {
+      await manager.cleanupExactPreview(session.projectPath, session.exactPreview.sandboxPath);
+    }
+
+    const { onLog } = createLiveCollector(event, streamId);
+    const abortController = registerActiveRun(streamId, "preview");
+    try {
+      const preview = await manager.generateExactPreview({
+        task: session.task,
+        projectPath: session.projectPath,
+        config: session.settings,
+        finalPlan: session.finalPlan,
+        onLog,
+        signal: abortController.signal
+      });
+      await pendingPlans.set(payload.sessionId, {
+        ...session,
+        exactPreview: {
+          exactPreviewAvailable: preview.exactPreviewAvailable,
+          previewMode: preview.previewMode,
+          reason: preview.reason,
+          sandboxPath: preview.sandboxPath,
+          changedFiles: preview.changedFiles,
+          diff: preview.diff,
+          validationReport: preview.validationReport,
+          createdAt: new Date().toISOString()
+        }
+      });
+      return { ...preview, streamId };
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw new Error("Run cancelled");
+      }
+      lastRuntimeFailure = { at: new Date().toISOString(), message: String(error) };
+      throw error;
+    } finally {
+      clearActiveRun(streamId);
+    }
   });
 
   createWindow();
