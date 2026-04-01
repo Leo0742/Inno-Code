@@ -18,6 +18,7 @@ export function SettingsPanel({ settings, onChange, onSave }: Props) {
   return (
     <section className="panel">
       <h3>Settings</h3>
+      <p className="helper">Inno Code settings below are stored locally. Provider keys/accounts are still configured in openclaude runtime outside this app.</p>
       <label>Rounds</label>
       <input type="number" value={settings.rounds} min={1} onChange={(e) => onChange({ ...settings, rounds: Number(e.target.value) })} />
       <label>Repair Attempts</label>
@@ -56,7 +57,8 @@ export function SettingsPanel({ settings, onChange, onSave }: Props) {
         Require explicit approval before apply
       </label>
       <button onClick={onSave}>Save Settings</button>
-      <p>Validation runs through shell commands; verifier model summarizes command results for review.</p>
+      <p className="helper">Managed in Inno Code: planning loops, model-per-role mapping, approval gate, validation commands.</p>
+      <p className="helper">Managed in openclaude runtime: provider selection, API keys, account auth, remote runtime behavior.</p>
     </section>
   );
 }

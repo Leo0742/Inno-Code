@@ -1,6 +1,20 @@
 import { spawn } from "node:child_process";
 import type { RuntimeClient, RuntimeEvent, RuntimeTurnResult } from "./types.js";
 
+export class AbortRunError extends Error {
+  constructor(message = "Run cancelled") {
+    super(message);
+    this.name = "AbortRunError";
+  }
+}
+
+export function isAbortError(error: unknown) {
+  if (!error) return false;
+  if (error instanceof AbortRunError) return true;
+  if (error instanceof Error && (error.name === "AbortError" || /cancelled|aborted/i.test(error.message))) return true;
+  return false;
+}
+
 function classifyEvent(raw: string): RuntimeEvent {
   let parsed: Record<string, unknown> | null = null;
   try {
@@ -45,6 +59,7 @@ export class OpenClaudeCliRuntime implements RuntimeClient {
     prompt: string;
     permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
     onEvent?: (event: RuntimeEvent) => void;
+    signal?: AbortSignal;
   }): Promise<RuntimeTurnResult> {
     const args = [
       "-y",
@@ -68,8 +83,25 @@ export class OpenClaudeCliRuntime implements RuntimeClient {
       const rawEvents: string[] = [];
       const events: RuntimeEvent[] = [];
       const outputs: string[] = [];
+      let cancelled = false;
+
+      const abortHandler = () => {
+        cancelled = true;
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (!child.killed) child.kill("SIGKILL");
+        }, 1200);
+      };
+
+      if (input.signal) {
+        if (input.signal.aborted) {
+          abortHandler();
+        }
+        input.signal.addEventListener("abort", abortHandler, { once: true });
+      }
 
       child.stdout.on("data", (chunk: Buffer) => {
+        if (cancelled) return;
         buffer += chunk.toString();
         let idx;
         while ((idx = buffer.indexOf("\n")) >= 0) {
@@ -85,13 +117,21 @@ export class OpenClaudeCliRuntime implements RuntimeClient {
       });
 
       child.stderr.on("data", (chunk: Buffer) => {
+        if (cancelled) return;
         const raw = chunk.toString();
         const event = classifyEvent(raw);
         events.push(event);
         input.onEvent?.(event);
       });
       child.on("error", reject);
-      child.on("close", (code: number) => {
+      child.on("close", (code: number | null) => {
+        if (input.signal) {
+          input.signal.removeEventListener("abort", abortHandler);
+        }
+        if (cancelled || input.signal?.aborted || code === null || code === 143) {
+          reject(new AbortRunError());
+          return;
+        }
         if (code !== 0) {
           reject(new Error(`openclaude exited with code ${code}`));
           return;

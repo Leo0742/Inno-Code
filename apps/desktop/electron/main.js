@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { DebateManager, OpenClaudeCliRuntime } from "@inno/engine";
+import { DebateManager, OpenClaudeCliRuntime, isAbortError } from "@inno/engine";
 import { createPendingPlanStore, defaultSettings, mergeSettings } from "./state.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -11,6 +11,7 @@ const __dirname = path.dirname(__filename);
 const runtime = new OpenClaudeCliRuntime();
 const manager = new DebateManager(runtime);
 let pendingPlans;
+const activeRuns = new Map();
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -63,6 +64,16 @@ function createLiveCollector(event, streamId) {
   return { onLog };
 }
 
+function registerActiveRun(streamId, kind) {
+  const abortController = new AbortController();
+  activeRuns.set(streamId, { kind, abortController, createdAt: Date.now() });
+  return abortController;
+}
+
+function clearActiveRun(streamId) {
+  activeRuns.delete(streamId);
+}
+
 app.whenReady().then(async () => {
   pendingPlans = createPendingPlanStore({ filePath: getPendingPlansPath() });
   await pendingPlans.restore();
@@ -86,24 +97,41 @@ app.whenReady().then(async () => {
     const streamId = payload.streamId || `plan-${Date.now()}`;
     const settings = await loadSettings();
     const { onLog } = createLiveCollector(event, streamId);
-    const plan = await manager.runPlanning({
-      task: payload.task,
-      projectPath: payload.projectPath,
-      config: settings,
-      onLog
-    });
-    const sessionId = `${Date.now()}`;
-    await pendingPlans.set(sessionId, {
-      task: payload.task,
-      projectPath: payload.projectPath,
-      finalPlan: plan.finalPlan,
-      settings,
-      proposedDiff: plan.proposedDiff,
-      predictedChangedFiles: plan.predictedChangedFiles,
-      implementationChecklist: plan.implementationChecklist,
-      createdAt: new Date().toISOString()
-    });
-    return { ...plan, streamId, sessionId, status: "pending_review" };
+    const abortController = registerActiveRun(streamId, "plan");
+
+    try {
+      const plan = await manager.runPlanning({
+        task: payload.task,
+        projectPath: payload.projectPath,
+        config: settings,
+        onLog,
+        signal: abortController.signal
+      });
+      const sessionId = `${Date.now()}`;
+      await pendingPlans.set(sessionId, {
+        task: payload.task,
+        projectPath: payload.projectPath,
+        finalPlan: plan.finalPlan,
+        settings,
+        proposedDiff: plan.proposedDiff,
+        predictedChangedFiles: plan.predictedChangedFiles,
+        implementationChecklist: plan.implementationChecklist,
+        createdAt: new Date().toISOString()
+      });
+      return { ...plan, streamId, sessionId, status: "pending_review" };
+    } catch (error) {
+      if (isAbortError(error)) {
+        event.sender.send("runtime:event", {
+          streamId,
+          ts: Date.now(),
+          event: { type: "phase_event", phase: "revision", message: "Run cancelled by user.", raw: "cancelled" }
+        });
+        throw new Error("Run cancelled");
+      }
+      throw error;
+    } finally {
+      clearActiveRun(streamId);
+    }
   });
 
   ipcMain.handle("debate:apply", async (event, payload) => {
@@ -122,20 +150,45 @@ app.whenReady().then(async () => {
     }
 
     const { onLog } = createLiveCollector(event, streamId);
-    const result = await manager.applyApprovedPlan({
-      task: session.task,
-      projectPath: session.projectPath,
-      config: session.settings,
-      finalPlan: session.finalPlan,
-      approved: Boolean(payload.approved),
-      onLog
-    });
+    const abortController = registerActiveRun(streamId, "apply");
 
-    if (result.applied || payload.approved === false) {
-      await pendingPlans.delete(payload.sessionId);
+    try {
+      const result = await manager.applyApprovedPlan({
+        task: session.task,
+        projectPath: session.projectPath,
+        config: session.settings,
+        finalPlan: session.finalPlan,
+        approved: Boolean(payload.approved),
+        onLog,
+        signal: abortController.signal
+      });
+
+      if (result.applied || payload.approved === false) {
+        await pendingPlans.delete(payload.sessionId);
+      }
+
+      return { ...result, streamId, status: result.applied ? "applied" : "blocked" };
+    } catch (error) {
+      if (isAbortError(error)) {
+        event.sender.send("runtime:event", {
+          streamId,
+          ts: Date.now(),
+          event: { type: "phase_event", phase: "validation", message: "Run cancelled by user.", raw: "cancelled" }
+        });
+        throw new Error("Run cancelled");
+      }
+      throw error;
+    } finally {
+      clearActiveRun(streamId);
     }
+  });
 
-    return { ...result, streamId, status: result.applied ? "applied" : "blocked" };
+  ipcMain.handle("debate:cancel", async (_event, payload) => {
+    const activeRun = activeRuns.get(payload.streamId);
+    if (!activeRun) return { ok: false, message: "No active run found." };
+    activeRun.abortController.abort();
+    clearActiveRun(payload.streamId);
+    return { ok: true, message: `Cancelled ${activeRun.kind} run.` };
   });
 
   ipcMain.handle("debate:discard", async (_evt, payload) => {

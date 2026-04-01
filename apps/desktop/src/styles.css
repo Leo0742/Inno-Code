@@ -4,7 +4,16 @@ body { margin: 0; font-family: Inter, sans-serif; background: #0f172a; color: #e
 .sidebar { overflow: auto; }
 .main { overflow: auto; }
 .logs { overflow: auto; }
-textarea { width: 100%; background: #0b1220; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; }
-button { background: #2563eb; color: white; border: none; border-radius: 6px; padding: 8px 12px; margin-right: 8px; }
+textarea, input { width: 100%; background: #0b1220; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; margin-bottom: 8px; }
+button { background: #2563eb; color: white; border: none; border-radius: 6px; padding: 8px 12px; margin-right: 8px; cursor: pointer; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.button-secondary { background: #334155; }
+.button-danger { background: #b91c1c; }
 .message { background: #0b1220; border-radius: 6px; padding: 8px; margin-bottom: 8px; }
 .actions { margin-top: 8px; }
+.pending-list, .file-list { list-style: none; padding: 0; margin: 0; }
+.pending-item { border: 1px solid #334155; border-radius: 6px; padding: 10px; margin-bottom: 8px; }
+.pending-item p { margin: 4px 0; }
+.review-grid { display: grid; grid-template-columns: minmax(180px, 280px) 1fr; gap: 12px; align-items: start; }
+.helper { color: #94a3b8; font-size: 0.88rem; }
+pre { white-space: pre-wrap; background: #0b1220; border: 1px solid #334155; border-radius: 6px; padding: 8px; }
