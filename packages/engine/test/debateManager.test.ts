@@ -4,7 +4,7 @@ import { DebateManager, type RuntimeClient, type RuntimeEvent } from "../src/ind
 class FakeRuntime implements RuntimeClient {
   calls: Array<{ model: string; prompt: string; permissionMode?: string }> = [];
 
-  async runTurn(input: { model: string; prompt: string; permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan" }) {
+  async runTurn(input: { projectPath: string; model: string; prompt: string; permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan"; onEvent?: (event: RuntimeEvent) => void; signal?: AbortSignal }) {
     this.calls.push({ model: input.model, prompt: input.prompt, permissionMode: input.permissionMode });
     return {
       output: input.prompt.includes("Generate a proposed unified diff")

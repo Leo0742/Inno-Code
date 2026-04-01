@@ -73,6 +73,7 @@ interface Window {
       applied: boolean;
       status: string;
     }>;
+    cancelRun: (payload: { streamId: string }) => Promise<{ ok: boolean; message: string }>;
     discardPlan: (payload: { sessionId: string }) => Promise<{ ok: true }>;
     onRuntimeEvent: (handler: (payload: RuntimeEventPayload) => void) => () => void;
   };

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { DebateTimeline } from "./components/DebateTimeline";
 import { LogsPanel } from "./components/LogsPanel";
+import { PendingSessionsPanel } from "./components/PendingSessionsPanel";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TaskComposer } from "./components/TaskComposer";
@@ -44,7 +45,6 @@ function deriveStatusFromEvent(type: string, phase?: string): string | null {
   return null;
 }
 
-
 function isRuntimeEventForActiveStream(activeStreamId: string, incomingStreamId: string) {
   return Boolean(activeStreamId) && activeStreamId === incomingStreamId;
 }
@@ -69,26 +69,16 @@ export function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [activeStreamId, setActiveStreamId] = useState("");
+  const [pendingSessions, setPendingSessions] = useState<PendingPlanSession[]>([]);
+
+  async function refreshPendingSessions() {
+    const sessions = await window.innoCode.getPendingPlans();
+    setPendingSessions(sessions);
+  }
 
   useEffect(() => {
     window.innoCode.getSettings().then((saved) => setSettings(saved));
-    window.innoCode.getPendingPlans().then((pendingPlans) => {
-      if (pendingPlans.length === 0) return;
-      const latest = pendingPlans
-        .slice()
-        .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""))
-        .at(-1);
-      if (!latest) return;
-      setSessionId(latest.sessionId);
-      setTask(latest.task);
-      setProjectPath(latest.projectPath);
-      setFinalPlan(latest.finalPlan);
-      setProposedDiff(latest.proposedDiff ?? "");
-      setPredictedChangedFiles(latest.predictedChangedFiles ?? []);
-      setImplementationChecklist(latest.implementationChecklist ?? []);
-      setStatus("pending_review");
-      setLogs((prev) => [...prev, `Restored pending review session ${latest.sessionId}.`]);
-    });
+    refreshPendingSessions();
 
     const unsubscribe = window.innoCode.onRuntimeEvent((payload) => {
       if (!isRuntimeEventForActiveStream(activeStreamId, payload.streamId)) return;
@@ -107,6 +97,22 @@ export function App() {
       return acc;
     }, {});
   }, [messages]);
+
+  function loadPendingSession(loadedSessionId: string) {
+    const selected = pendingSessions.find((session) => session.sessionId === loadedSessionId);
+    if (!selected) return;
+    setSessionId(selected.sessionId);
+    setTask(selected.task);
+    setProjectPath(selected.projectPath);
+    setFinalPlan(selected.finalPlan);
+    setProposedDiff(selected.proposedDiff ?? "");
+    setPredictedChangedFiles(selected.predictedChangedFiles ?? []);
+    setImplementationChecklist(selected.implementationChecklist ?? []);
+    setValidationReport("");
+    setDiff("");
+    setStatus("pending_review");
+    setLogs((prev) => [...prev, `Loaded pending review session ${selected.sessionId}.`]);
+  }
 
   async function chooseProject() {
     const selected = await window.innoCode.pickProject();
@@ -135,9 +141,16 @@ export function App() {
       setImplementationChecklist(result.implementationChecklist);
       setSessionId(result.sessionId);
       setStatus(result.status);
+      await refreshPendingSessions();
     } catch (error) {
-      setStatus("error");
-      setLogs((prev) => [...prev, `Planning failed: ${String(error)}`]);
+      const message = String(error);
+      if (message.includes("cancelled")) {
+        setStatus("cancelled");
+        setLogs((prev) => [...prev, "Planning was cancelled by user."]);
+      } else {
+        setStatus("error");
+        setLogs((prev) => [...prev, `Planning failed: ${message}`]);
+      }
     } finally {
       setIsRunning(false);
       setActiveStreamId("");
@@ -157,13 +170,30 @@ export function App() {
       setDiff(result.diff);
       setStatus(result.status);
       setSessionId("");
+      await refreshPendingSessions();
     } catch (error) {
-      setStatus("error");
-      setLogs((prev) => [...prev, `Apply failed: ${String(error)}`]);
+      const message = String(error);
+      if (message.includes("cancelled")) {
+        setStatus("cancelled");
+        setLogs((prev) => [...prev, "Apply/validation run was cancelled by user."]);
+      } else {
+        setStatus("error");
+        setLogs((prev) => [...prev, `Apply failed: ${message}`]);
+      }
     } finally {
       setIsRunning(false);
       setActiveStreamId("");
     }
+  }
+
+  async function handleCancelRun() {
+    if (!activeStreamId || !isRunning) return;
+    const cancelledStreamId = activeStreamId;
+    await window.innoCode.cancelRun({ streamId: cancelledStreamId });
+    setStatus("cancelled");
+    setIsRunning(false);
+    setActiveStreamId("");
+    setLogs((prev) => [...prev, `Run ${cancelledStreamId} cancelled by user.`]);
   }
 
   async function handleDiscard() {
@@ -176,6 +206,16 @@ export function App() {
     setPredictedChangedFiles([]);
     setImplementationChecklist([]);
     setMessages([]);
+    await refreshPendingSessions();
+  }
+
+  async function handleDeletePendingSession(targetSessionId: string) {
+    await window.innoCode.discardPlan({ sessionId: targetSessionId });
+    if (targetSessionId === sessionId) {
+      setSessionId("");
+      setStatus("discarded");
+    }
+    await refreshPendingSessions();
   }
 
   async function handleSaveSettings() {
@@ -193,7 +233,13 @@ export function App() {
         <SettingsPanel settings={settings} onChange={setSettings} onSave={handleSaveSettings} />
       </aside>
       <main className="main">
-        <TaskComposer task={task} onTaskChange={setTask} onRun={handleRun} isRunning={isRunning} />
+        <TaskComposer task={task} onTaskChange={setTask} onRun={handleRun} onCancel={handleCancelRun} isRunning={isRunning} />
+        <PendingSessionsPanel
+          sessions={pendingSessions}
+          activeSessionId={sessionId}
+          onOpen={loadPendingSession}
+          onDelete={handleDeletePendingSession}
+        />
         <DebateTimeline grouped={grouped} />
         <ReviewPanel
           status={status}

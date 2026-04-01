@@ -49,6 +49,7 @@ export interface RuntimeClient {
     prompt: string;
     permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
     onEvent?: (event: RuntimeEvent) => void;
+    signal?: AbortSignal;
   }): Promise<RuntimeTurnResult>;
 }
 
@@ -57,6 +58,7 @@ export interface DebateRunInput {
   projectPath: string;
   config: DebateConfig;
   onLog?: (event: RuntimeEvent) => void;
+  signal?: AbortSignal;
 }
 
 export interface PlanRunResult {

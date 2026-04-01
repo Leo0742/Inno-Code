@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("innoCode", {
   getPendingPlans: () => ipcRenderer.invoke("pending:get"),
   runPlan: (payload) => ipcRenderer.invoke("debate:plan", payload),
   applyPlan: (payload) => ipcRenderer.invoke("debate:apply", payload),
+  cancelRun: (payload) => ipcRenderer.invoke("debate:cancel", payload),
   discardPlan: (payload) => ipcRenderer.invoke("debate:discard", payload),
   onRuntimeEvent: (handler) => {
     const listener = (_event, payload) => handler(payload);
