@@ -1,0 +1,10 @@
+body { margin: 0; font-family: Inter, sans-serif; background: #0f172a; color: #e2e8f0; }
+.layout { display: grid; grid-template-columns: 260px 1fr 320px; min-height: 100vh; gap: 12px; padding: 12px; }
+.panel { background: #111827; border: 1px solid #1f2937; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.sidebar { overflow: auto; }
+.main { overflow: auto; }
+.logs { overflow: auto; }
+textarea { width: 100%; background: #0b1220; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; }
+button { background: #2563eb; color: white; border: none; border-radius: 6px; padding: 8px 12px; margin-right: 8px; }
+.message { background: #0b1220; border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+.actions { margin-top: 8px; }
